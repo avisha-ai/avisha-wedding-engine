@@ -18,6 +18,7 @@
  */
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Bloom, EffectComposer } from "@react-three/postprocessing";
 import {
   useCallback,
   useEffect,
@@ -286,6 +287,17 @@ export default function CeremonyCanvas({
         dpr={[1, 2]}
       >
         <CeremonyRig chapter={chapter} onSettled={handleSettled} />
+
+        {/* Bloom — only bright specular glints, emissive lanterns, and fire
+            cross the luminance threshold, so the gold and flames actually glow. */}
+        <EffectComposer>
+          <Bloom
+            mipmapBlur
+            intensity={0.9}
+            luminanceThreshold={0.55}
+            luminanceSmoothing={0.25}
+          />
+        </EffectComposer>
       </Canvas>
 
       {showControls && (
