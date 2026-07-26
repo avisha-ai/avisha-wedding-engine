@@ -40,6 +40,7 @@ import {
 import { ChapterWorld, applyWorldFade } from "./chapterWorlds";
 import { ChapterParticles } from "./ceremonyParticles";
 import { CeremonySoundscape } from "./ceremonyAudio";
+import SimulationOverlay from "./SimulationOverlay";
 
 // -----------------------------------------------------------------------------
 // Public props
@@ -338,6 +339,9 @@ export default function CeremonyCanvas({
           />
         </EffectComposer>
       </Canvas>
+
+      {/* Interactive Simulation Overlay — drives the Agent Mesh live. */}
+      <SimulationOverlay chapterId={chapterId} />
 
       {/* Ambient soundscape toggle (opt-in; also unlocks browser audio). */}
       <button
