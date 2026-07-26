@@ -39,6 +39,7 @@ import {
 } from "./ceremonyConfig";
 import { ChapterWorld, applyWorldFade } from "./chapterWorlds";
 import { ChapterParticles } from "./ceremonyParticles";
+import { CeremonySoundscape } from "./ceremonyAudio";
 
 // -----------------------------------------------------------------------------
 // Public props
@@ -249,6 +250,8 @@ export default function CeremonyCanvas({
   className,
 }: CeremonyCanvasProps): JSX.Element {
   const [chapterId, setChapterId] = useState<ChapterId>(initialChapter);
+  const [audioOn, setAudioOn] = useState(false);
+  const soundscapeRef = useRef<CeremonySoundscape | null>(null);
 
   const chapter = CEREMONY_CHAPTERS[chapterId];
 
@@ -261,6 +264,42 @@ export default function CeremonyCanvas({
 
   const go = useCallback((direction: "next" | "prev") => {
     setChapterId((current) => adjacentChapter(current, direction) ?? current);
+  }, []);
+
+  // Audio is opt-in: the engine is created + resumed on the first click, which
+  // also satisfies the browser autoplay-gesture requirement.
+  const toggleAudio = useCallback(async () => {
+    let engine = soundscapeRef.current;
+    if (!engine) {
+      const created = new CeremonySoundscape();
+      if (!created.supported) return;
+      created.start();
+      soundscapeRef.current = created;
+      engine = created;
+    }
+    await engine.resume();
+    setAudioOn((on) => !on);
+  }, []);
+
+  // Fade the master bus with the on/off state.
+  useEffect(() => {
+    soundscapeRef.current?.setEnabled(audioOn);
+  }, [audioOn]);
+
+  // Cross-fade the soundscape whenever the chapter changes (while audio is on).
+  useEffect(() => {
+    const engine = soundscapeRef.current;
+    if (engine && audioOn) {
+      engine.setChapter(chapterId, chapter.transitionDuration);
+    }
+  }, [chapterId, audioOn, chapter.transitionDuration]);
+
+  // Release the audio hardware on unmount.
+  useEffect(() => {
+    return () => {
+      soundscapeRef.current?.dispose();
+      soundscapeRef.current = null;
+    };
   }, []);
 
   // Keyboard navigation: ← / → between chapters.
@@ -299,6 +338,23 @@ export default function CeremonyCanvas({
           />
         </EffectComposer>
       </Canvas>
+
+      {/* Ambient soundscape toggle (opt-in; also unlocks browser audio). */}
+      <button
+        type="button"
+        onClick={() => void toggleAudio()}
+        aria-label={audioOn ? "Mute ambient sound" : "Play ambient sound"}
+        aria-pressed={audioOn}
+        style={{
+          position: "absolute",
+          top: "1.25rem",
+          right: "1.25rem",
+          ...controlButtonStyle,
+          opacity: audioOn ? 1 : 0.7,
+        }}
+      >
+        {audioOn ? "🔊" : "🔈"}
+      </button>
 
       {showControls && (
         <div
