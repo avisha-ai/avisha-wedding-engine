@@ -60,6 +60,20 @@ export interface CeremonyCanvasProps {
 /** Minimal structural shape of a mutable numeric ref we tween with GSAP. */
 type NumberRef = { current: number };
 
+/**
+ * Shadow-map resolution for the key light. 1024² is ample here: the shadow
+ * camera is tightly cropped to the ~10-unit stage, so texel density is high
+ * without paying for a 2048² depth pass every frame alongside bloom.
+ */
+const SHADOW_MAP_SIZE = 1024;
+
+/**
+ * Half-extent of the orthographic shadow frustum. Sized to the widest world
+ * (the conservatory floor plate at 7.2 × 4.3) with headroom for the gable.
+ * Cropping tightly is what keeps 1024² sharp.
+ */
+const SHADOW_EXTENT = 5.5;
+
 // -----------------------------------------------------------------------------
 // Fade wrapper — drives one world's opacity from a shared numeric ref
 // -----------------------------------------------------------------------------
@@ -220,10 +234,27 @@ function CeremonyRig({ chapter, onSettled }: CeremonyRigProps): JSX.Element {
         intensity={chapter.lighting.ambientIntensity}
       />
       <hemisphereLight ref={hemiRef} intensity={chapter.lighting.hemiIntensity} />
+      {/* The key light is the only shadow caster. Fill lights that also cast
+          would multiply the shadow-map cost for very little visual return, and
+          would wash out the single directional read the chapters are lit for. */}
       <directionalLight
         ref={keyLightRef}
         position={chapter.lighting.keyDirection}
         intensity={chapter.lighting.keyIntensity}
+        castShadow
+        shadow-mapSize-width={SHADOW_MAP_SIZE}
+        shadow-mapSize-height={SHADOW_MAP_SIZE}
+        shadow-camera-near={0.5}
+        shadow-camera-far={26}
+        shadow-camera-left={-SHADOW_EXTENT}
+        shadow-camera-right={SHADOW_EXTENT}
+        shadow-camera-top={SHADOW_EXTENT}
+        shadow-camera-bottom={-SHADOW_EXTENT}
+        // Normal-offset biasing beats constant bias on bevelled geometry: the
+        // chamfers present grazing angles where a flat bias either peters out
+        // into acne or pushes the contact shadow off its own edge.
+        shadow-bias={-0.0006}
+        shadow-normalBias={0.022}
       />
 
       <FadeWorld key={chapter.id} chapter={chapter} fadeRef={curFade} />
@@ -319,6 +350,11 @@ export default function CeremonyCanvas({
       style={{ position: "relative", width: "100%", height: "100%" }}
     >
       <Canvas
+        // "soft" maps to THREE.PCFSoftShadowMap — percentage-closer filtering
+        // with a wide kernel. The extra taps are affordable because exactly one
+        // light casts, and the penumbra suits candle- and daylight-lit interiors
+        // far better than the hard edge of the default map.
+        shadows="soft"
         gl={{ antialias: true, alpha: false }}
         camera={{
           position: [...chapter.camera.position],

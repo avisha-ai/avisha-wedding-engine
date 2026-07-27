@@ -14,12 +14,131 @@
  * the gold motif carries through the story.
  */
 
-import { useFrame } from "@react-three/fiber";
-import { useMemo, useRef, type JSX } from "react";
+import { useFrame, useThree } from "@react-three/fiber";
+import { useEffect, useMemo, useRef, type JSX } from "react";
 import * as THREE from "three";
 
 import { kelvinToRGB, type ChapterConfig, type ChapterId } from "./ceremonyConfig";
 import { CEREMONY_SHADERS, createCeremonyUniforms } from "./shaders";
+import {
+  ashBedGeometry,
+  buildMatrices,
+  candelabraGeometry,
+  candleGeometry,
+  chairGeometry,
+  conservatoryColumnGeometry,
+  conservatoryFloorGeometry,
+  emberGeometry,
+  flameGeometry,
+  getEnvMap,
+  getReceptionMaterials,
+  getWeddingMaterials,
+  glassPaneGeometry,
+  havanKundGeometry,
+  kundRimBandGeometry,
+  mullionGeometry,
+  pillarCollarGeometry,
+  pillarShaftGeometry,
+  plateGeometry,
+  plinthGeometry,
+  tableApronGeometry,
+  tableLegGeometry,
+  tableTopGeometry,
+  type Placement,
+} from "./proceduralAssets";
+
+// -----------------------------------------------------------------------------
+// Instancing
+// -----------------------------------------------------------------------------
+
+interface InstancedPartProps {
+  readonly geometry: THREE.BufferGeometry;
+  readonly material: THREE.Material;
+  readonly placements: readonly Placement[];
+  readonly castShadow?: boolean;
+  readonly receiveShadow?: boolean;
+}
+
+/**
+ * Repeated furniture (pillars, chairs, rafters) drawn as a single
+ * `InstancedMesh` — one draw call, and one node for `applyWorldFade` to walk
+ * instead of N.
+ *
+ * `dispose={null}` protects the shared geometry and material owned by
+ * `proceduralAssets`; `InstancedMesh` does hold its own GPU instance buffer, so
+ * that one resource is released by hand on unmount.
+ */
+function InstancedPart({
+  geometry,
+  material,
+  placements,
+  castShadow = true,
+  receiveShadow = true,
+}: InstancedPartProps): JSX.Element {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const matrices = useMemo(() => buildMatrices(placements), [placements]);
+
+  useEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    for (let i = 0; i < matrices.length; i++) mesh.setMatrixAt(i, matrices[i]);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }, [matrices]);
+
+  // Captured at mount: React detaches refs before effect cleanup runs.
+  useEffect(() => {
+    const mesh = ref.current;
+    return () => mesh?.dispose();
+  }, []);
+
+  return (
+    <instancedMesh
+      ref={ref}
+      args={[geometry, material, placements.length]}
+      castShadow={castShadow}
+      receiveShadow={receiveShadow}
+      userData={{ castsShadow: castShadow }}
+      dispose={null}
+    />
+  );
+}
+
+/** A single mesh over a cached geometry/material pair. */
+function Part({
+  geometry,
+  material,
+  position,
+  rotation,
+  scale,
+  castShadow = true,
+  receiveShadow = true,
+  renderOrder,
+}: {
+  readonly geometry: THREE.BufferGeometry;
+  readonly material: THREE.Material;
+  readonly position?: readonly [number, number, number];
+  readonly rotation?: readonly [number, number, number];
+  readonly scale?: readonly [number, number, number];
+  readonly castShadow?: boolean;
+  readonly receiveShadow?: boolean;
+  readonly renderOrder?: number;
+}): JSX.Element {
+  return (
+    <mesh
+      geometry={geometry}
+      material={material}
+      position={position as [number, number, number] | undefined}
+      rotation={rotation as [number, number, number] | undefined}
+      scale={scale as [number, number, number] | undefined}
+      castShadow={castShadow}
+      receiveShadow={receiveShadow}
+      renderOrder={renderOrder}
+      userData={{ castsShadow: castShadow }}
+      dispose={null}
+    />
+  );
+}
 
 // -----------------------------------------------------------------------------
 // Reusable beaten-gold material (own uniforms per instance)
@@ -344,70 +463,139 @@ function AmphitheaterWorld({ chapter }: WorldProps): JSX.Element {
 // 5 — Wedding: heavy bronze havan kund on sandstone pillars
 // -----------------------------------------------------------------------------
 
-function HavanKundWorld({ chapter }: WorldProps): JSX.Element {
-  const { secondary, emissive } = chapter.palette;
-  const fireRef = useRef<THREE.Group>(null);
-  const t = useRef(0);
+/** Corner footprint of the four pillars carrying the kund. */
+const KUND_PILLARS: readonly Placement[] = [
+  { position: [-0.9, 0.59, -0.9] },
+  { position: [0.9, 0.59, -0.9] },
+  { position: [-0.9, 0.59, 0.9] },
+  { position: [0.9, 0.59, 0.9] },
+];
 
+/** Bronze collars capping each pillar top and bottom. */
+const KUND_COLLARS: readonly Placement[] = [
+  { position: [-0.9, 0.23, -0.9] },
+  { position: [0.9, 0.23, -0.9] },
+  { position: [-0.9, 0.23, 0.9] },
+  { position: [0.9, 0.23, 0.9] },
+  { position: [-0.9, 0.95, -0.9] },
+  { position: [0.9, 0.95, -0.9] },
+  { position: [-0.9, 0.95, 0.9] },
+  { position: [0.9, 0.95, 0.9] },
+];
+
+/** Embers strewn across the ash bed. Hand-placed so the scatter reads evenly. */
+const KUND_EMBERS: readonly Placement[] = [
+  { position: [0.16, 1.07, 0.09], scale: 1.0 },
+  { position: [-0.2, 1.06, 0.17], scale: 0.75 },
+  { position: [0.05, 1.08, -0.21], scale: 1.15 },
+  { position: [-0.13, 1.06, -0.1], scale: 0.65 },
+  { position: [0.27, 1.06, -0.06], scale: 0.85 },
+  { position: [-0.28, 1.07, -0.24], scale: 0.95 },
+  { position: [0.11, 1.06, 0.28], scale: 0.7 },
+];
+
+/** Offset, scale and beat rate of each of the three flame bodies. */
+const KUND_FLAMES = [
+  { x: -0.17, z: 0.04, scale: 0.62, rate: 5.4, phase: 0.0 },
+  { x: 0.0, z: -0.03, scale: 0.86, rate: 6.7, phase: 1.7 },
+  { x: 0.16, z: 0.05, scale: 0.55, rate: 7.9, phase: 3.1 },
+] as const;
+
+function HavanKundWorld({ chapter }: WorldProps): JSX.Element {
+  const renderer = useThree((state) => state.gl);
+  const env = useMemo(() => getEnvMap(renderer, "warm"), [renderer]);
+  const materials = useMemo(() => getWeddingMaterials(chapter, env), [chapter, env]);
+
+  const flameRefs = useRef<(THREE.Group | null)[]>([]);
+  const clock = useRef(0);
+
+  // Each flame breathes on its own rate and phase, so the fire never pulses as
+  // one block. Vertical scale only — the base stays anchored in the ash.
   useFrame((_state, delta) => {
-    t.current += delta;
-    if (fireRef.current) {
-      const s = 0.85 + Math.abs(Math.sin(t.current * 6.0)) * 0.3;
-      fireRef.current.scale.set(1, s, 1);
+    clock.current += delta;
+    for (let i = 0; i < KUND_FLAMES.length; i++) {
+      const group = flameRefs.current[i];
+      if (!group) continue;
+      const flame = KUND_FLAMES[i];
+      const beat = Math.sin(clock.current * flame.rate + flame.phase);
+      const flicker = Math.sin(clock.current * flame.rate * 2.7 + flame.phase) * 0.06;
+      group.scale.set(
+        flame.scale * (1 + flicker * 0.5),
+        flame.scale * (0.86 + Math.abs(beat) * 0.32 + flicker),
+        flame.scale * (1 + flicker * 0.5),
+      );
+      group.rotation.y = beat * 0.12;
     }
   });
 
-  const wall = 0.18;
-  const half = 0.9;
-
   return (
-    <group position={[0, 0.2, 0]}>
-      {/* Four sandstone pillars */}
-      {[
-        [-half, -half],
-        [half, -half],
-        [-half, half],
-        [half, half],
-      ].map((p, i) => (
-        <mesh key={i} position={[p[0], 0.4, p[1]]}>
-          <boxGeometry args={[0.28, 0.8, 0.28]} />
-          <meshStandardMaterial color={secondary} roughness={0.9} transparent />
-        </mesh>
+    <group>
+      {/* Sandstone plinth — the only surface that reads the key light broadly,
+          so it carries most of the contact shadow. */}
+      <Part geometry={plinthGeometry()} material={materials.sandstone} position={[0, 0.09, 0]} />
+
+      {/* Four chamfered pillars with turned bronze collars top and bottom. */}
+      <InstancedPart
+        geometry={pillarShaftGeometry()}
+        material={materials.sandstone}
+        placements={KUND_PILLARS}
+      />
+      <InstancedPart
+        geometry={pillarCollarGeometry()}
+        material={materials.bronze}
+        placements={KUND_COLLARS}
+      />
+
+      {/* The kund: three bevelled square tiers widening upward, merged to one
+          draw call, in hammered bronze. */}
+      <Part geometry={havanKundGeometry()} material={materials.bronze} position={[0, 1.08, 0]} />
+
+      {/* Beaten-gold band capping the top rim — carries the gold motif. */}
+      <mesh
+        geometry={kundRimBandGeometry()}
+        position={[0, 1.517, 0]}
+        castShadow
+        receiveShadow
+        userData={{ castsShadow: true }}
+        dispose={null}
+      >
+        <GoldMaterial chapter={chapter} />
+      </mesh>
+
+      {/* Ash bed and mound sunk into the aperture. */}
+      <Part
+        geometry={ashBedGeometry()}
+        material={materials.ash}
+        position={[0, 1.03, 0]}
+        castShadow={false}
+      />
+      <InstancedPart
+        geometry={emberGeometry()}
+        material={materials.ember}
+        placements={KUND_EMBERS}
+        castShadow={false}
+      />
+
+      {/* Sacred fire — lathed teardrops rather than cones. */}
+      {KUND_FLAMES.map((flame, i) => (
+        <group
+          key={i}
+          ref={(node) => {
+            flameRefs.current[i] = node;
+          }}
+          position={[flame.x, 1.1, flame.z]}
+        >
+          <mesh
+            geometry={flameGeometry()}
+            material={materials.flame}
+            castShadow={false}
+            receiveShadow={false}
+            renderOrder={2}
+            userData={{ castsShadow: false }}
+            dispose={null}
+          />
+        </group>
       ))}
-      {/* Square kund rim (four walls) — beaten gold */}
-      <group position={[0, 1.0, 0]}>
-        {[
-          { pos: [0, 0, half] as [number, number, number], size: [half * 2 + wall, 0.4, wall] as [number, number, number] },
-          { pos: [0, 0, -half] as [number, number, number], size: [half * 2 + wall, 0.4, wall] as [number, number, number] },
-          { pos: [half, 0, 0] as [number, number, number], size: [wall, 0.4, half * 2 + wall] as [number, number, number] },
-          { pos: [-half, 0, 0] as [number, number, number], size: [wall, 0.4, half * 2 + wall] as [number, number, number] },
-        ].map((w, i) => (
-          <mesh key={i} position={w.pos}>
-            <boxGeometry args={w.size} />
-            <GoldMaterial chapter={chapter} />
-          </mesh>
-        ))}
-        {/* Kund floor */}
-        <mesh position={[0, -0.18, 0]}>
-          <boxGeometry args={[half * 2, 0.06, half * 2]} />
-          <meshStandardMaterial color={secondary} roughness={0.8} transparent />
-        </mesh>
-      </group>
-      {/* Sacred fire */}
-      <group ref={fireRef} position={[0, 1.15, 0]}>
-        {[0, 1, 2].map((i) => (
-          <mesh key={i} position={[(i - 1) * 0.22, 0.2 + i * 0.05, 0]}>
-            <coneGeometry args={[0.22 - i * 0.05, 0.6 - i * 0.1, 6]} />
-            <meshStandardMaterial
-              color={emissive}
-              emissive={emissive}
-              emissiveIntensity={2.4}
-              transparent
-              opacity={0.9}
-            />
-          </mesh>
-        ))}
-      </group>
     </group>
   );
 }
@@ -416,71 +604,214 @@ function HavanKundWorld({ chapter }: WorldProps): JSX.Element {
 // 6 — Reception: expansive conservatory dining glass layout
 // -----------------------------------------------------------------------------
 
+// Gable geometry: eaves sit on the column capitals, the ridge rides above the
+// centreline. Every roof member derives its tilt from this one angle.
+const EAVE_Y = 2.22;
+const EAVE_Z = 1.85;
+const RIDGE_Y = 2.62;
+const ROOF_RUN = Math.hypot(EAVE_Z, RIDGE_Y - EAVE_Y);
+const ROOF_PITCH = Math.atan2(RIDGE_Y - EAVE_Y, EAVE_Z);
+const ROOF_MID_Y = (EAVE_Y + RIDGE_Y) / 2;
+/** Ridge length — the column span plus a little overhang at each gable end. */
+const RIDGE_SPAN = 5.6;
+
+const CONSERVATORY_COLUMNS: readonly Placement[] = [
+  { position: [-2.6, 0, -1.4] },
+  { position: [2.6, 0, -1.4] },
+  { position: [-2.6, 0, 1.4] },
+  { position: [2.6, 0, 1.4] },
+];
+
+/** Rafters running ridge → eave on both slopes. */
+const CONSERVATORY_RAFTERS: readonly Placement[] = [-2.4, -1.2, 0, 1.2, 2.4].flatMap(
+  (x): Placement[] => [
+    {
+      position: [x, ROOF_MID_Y, EAVE_Z / 2],
+      rotation: [ROOF_PITCH, 0, 0],
+      scale: [1, 1, ROOF_RUN],
+    },
+    {
+      position: [x, ROOF_MID_Y, -EAVE_Z / 2],
+      rotation: [Math.PI - ROOF_PITCH, 0, 0],
+      scale: [1, 1, ROOF_RUN],
+    },
+  ],
+);
+
+const TABLE_LEGS: readonly Placement[] = [
+  { position: [-1.95, 0, -0.42] },
+  { position: [1.95, 0, -0.42] },
+  { position: [-1.95, 0, 0.42] },
+  { position: [1.95, 0, 0.42] },
+];
+
+const SEAT_X = [-1.5, -0.5, 0.5, 1.5] as const;
+
+/** Eight chairs, each turned to face the table. */
+const CONSERVATORY_CHAIRS: readonly Placement[] = SEAT_X.flatMap((x): Placement[] => [
+  { position: [x, 0, -0.95] },
+  { position: [x, 0, 0.95], rotation: [0, Math.PI, 0] },
+]);
+
+/** A place setting opposite every chair. */
+const CONSERVATORY_PLATES: readonly Placement[] = SEAT_X.flatMap((x): Placement[] => [
+  { position: [x, 0.748, -0.36] },
+  { position: [x, 0.748, 0.36] },
+]);
+
+const CANDELABRA_X = [-1.3, 0, 1.3] as const;
+
+const CONSERVATORY_CANDELABRA: readonly Placement[] = CANDELABRA_X.map((x) => ({
+  position: [x, 0.748, 0] as const,
+}));
+
+const CONSERVATORY_CANDLES: readonly Placement[] = CANDELABRA_X.map((x) => ({
+  position: [x, 1.26, 0] as const,
+}));
+
 function ConservatoryWorld({ chapter }: WorldProps): JSX.Element {
-  const { primary, secondary, emissive } = chapter.palette;
-  const seats = 4;
+  const renderer = useThree((state) => state.gl);
+  const env = useMemo(() => getEnvMap(renderer, "daylight"), [renderer]);
+  const materials = useMemo(() => getReceptionMaterials(chapter, env), [chapter, env]);
+
+  const flameRefs = useRef<(THREE.Group | null)[]>([]);
+  const clock = useRef(0);
+
+  useFrame((_state, delta) => {
+    clock.current += delta;
+    for (let i = 0; i < CANDELABRA_X.length; i++) {
+      const group = flameRefs.current[i];
+      if (!group) continue;
+      // Table candles are sheltered, so the motion is far subtler than the
+      // open fire in the wedding chapter.
+      const beat = Math.sin(clock.current * (4.1 + i * 0.7) + i * 2.2);
+      const flicker = Math.sin(clock.current * (9.3 + i) + i) * 0.04;
+      group.scale.set(
+        0.13 * (1 + flicker),
+        0.13 * (0.94 + Math.abs(beat) * 0.12 + flicker),
+        0.13 * (1 + flicker),
+      );
+    }
+  });
 
   return (
-    <group position={[0, 0, 0]}>
-      {/* Floor plate */}
-      <mesh position={[0, -0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[7, 4]} />
-        <meshStandardMaterial color={secondary} transparent opacity={0.5} roughness={0.4} />
-      </mesh>
-      {/* Slender posts + gabled glass roof */}
-      {[-2.6, 2.6].map((x) =>
-        [-1.4, 1.4].map((z) => (
-          <mesh key={`${x}-${z}`} position={[x, 1.1, z]}>
-            <cylinderGeometry args={[0.05, 0.05, 2.2, 8]} />
-            <meshStandardMaterial color={primary} metalness={0.6} roughness={0.3} transparent />
-          </mesh>
-        )),
-      )}
-      {[-1, 1].map((s) => (
-        <mesh key={s} position={[0, 2.4, s * 0.9]} rotation={[s * 0.5, 0, 0]}>
-          <planeGeometry args={[5.4, 2.0]} />
-          <meshStandardMaterial
-            color={secondary}
-            transparent
-            opacity={0.12}
-            roughness={0.05}
-            side={THREE.DoubleSide}
+    <group>
+      {/* Polished floor plate — the primary shadow catcher. */}
+      <Part
+        geometry={conservatoryFloorGeometry()}
+        material={materials.stone}
+        position={[0, -0.045, 0]}
+        castShadow={false}
+      />
+
+      {/* Four turned columns carrying the gable. */}
+      <InstancedPart
+        geometry={conservatoryColumnGeometry()}
+        material={materials.gold}
+        placements={CONSERVATORY_COLUMNS}
+      />
+
+      {/* Ridge beam and rafters. The shared 1-unit bar is turned onto the X
+          axis and stretched to span the full gable. */}
+      <Part
+        geometry={mullionGeometry()}
+        material={materials.gold}
+        position={[0, RIDGE_Y, 0]}
+        rotation={[0, Math.PI / 2, 0]}
+        scale={[1, 1, RIDGE_SPAN]}
+      />
+      <InstancedPart
+        geometry={mullionGeometry()}
+        material={materials.gold}
+        placements={CONSERVATORY_RAFTERS}
+      />
+
+      {/* Glazing. Kept out of the shadow pass — an opaque shadow from clear
+          glass is worse than no shadow at all. */}
+      <Part
+        geometry={glassPaneGeometry()}
+        material={materials.glass}
+        position={[0, ROOF_MID_Y, EAVE_Z / 2]}
+        rotation={[ROOF_PITCH, 0, 0]}
+        castShadow={false}
+        receiveShadow={false}
+        renderOrder={3}
+      />
+      <Part
+        geometry={glassPaneGeometry()}
+        material={materials.glass}
+        position={[0, ROOF_MID_Y, -EAVE_Z / 2]}
+        rotation={[Math.PI - ROOF_PITCH, 0, 0]}
+        castShadow={false}
+        receiveShadow={false}
+        renderOrder={3}
+      />
+
+      {/* Dining table: glass top on a gold apron and four turned legs. */}
+      <InstancedPart
+        geometry={tableLegGeometry()}
+        material={materials.gold}
+        placements={TABLE_LEGS}
+      />
+      <Part
+        geometry={tableApronGeometry()}
+        material={materials.gold}
+        position={[0, 0.66, 0]}
+      />
+      <Part
+        geometry={tableTopGeometry()}
+        material={materials.glass}
+        position={[0, 0.72, 0]}
+        castShadow={false}
+        receiveShadow={false}
+        renderOrder={2}
+      />
+
+      {/* Eight chairs, one draw call. */}
+      <InstancedPart
+        geometry={chairGeometry()}
+        material={materials.gold}
+        placements={CONSERVATORY_CHAIRS}
+      />
+
+      {/* Place settings. */}
+      <InstancedPart
+        geometry={plateGeometry()}
+        material={materials.porcelain}
+        placements={CONSERVATORY_PLATES}
+        castShadow={false}
+      />
+
+      {/* Turned candelabra and their candles. */}
+      <InstancedPart
+        geometry={candelabraGeometry()}
+        material={materials.gold}
+        placements={CONSERVATORY_CANDELABRA}
+      />
+      <InstancedPart
+        geometry={candleGeometry()}
+        material={materials.wax}
+        placements={CONSERVATORY_CANDLES}
+      />
+
+      {CANDELABRA_X.map((x, i) => (
+        <group
+          key={x}
+          ref={(node) => {
+            flameRefs.current[i] = node;
+          }}
+          position={[x, 1.484, 0]}
+        >
+          <mesh
+            geometry={flameGeometry()}
+            material={materials.flame}
+            castShadow={false}
+            receiveShadow={false}
+            renderOrder={4}
+            userData={{ castsShadow: false }}
+            dispose={null}
           />
-        </mesh>
-      ))}
-      {/* Long dining table */}
-      <mesh position={[0, 0.7, 0]}>
-        <boxGeometry args={[4.4, 0.12, 1.0]} />
-        <meshStandardMaterial color={primary} roughness={0.5} transparent />
-      </mesh>
-      {/* Chairs */}
-      {Array.from({ length: seats }).map((_, i) => {
-        const x = -1.6 + (i / (seats - 1)) * 3.2;
-        return [-0.75, 0.75].map((z) => (
-          <mesh key={`${i}-${z}`} position={[x, 0.35, z]}>
-            <boxGeometry args={[0.4, 0.7, 0.4]} />
-            <meshStandardMaterial color={secondary} roughness={0.7} transparent />
-          </mesh>
-        ));
-      })}
-      {/* Gold candelabra centrepieces */}
-      {[-1.2, 0, 1.2].map((x) => (
-        <mesh key={x} position={[x, 0.95, 0]}>
-          <cylinderGeometry args={[0.06, 0.09, 0.4, 10]} />
-          <GoldMaterial chapter={chapter} />
-        </mesh>
-      ))}
-      {/* Candle flames */}
-      {[-1.2, 0, 1.2].map((x) => (
-        <mesh key={`f${x}`} position={[x, 1.24, 0]}>
-          <sphereGeometry args={[0.05, 8, 8]} />
-          <meshStandardMaterial
-            color={emissive}
-            emissive={emissive}
-            emissiveIntensity={2.2}
-            transparent
-          />
-        </mesh>
+        </group>
       ))}
     </group>
   );
@@ -591,22 +922,44 @@ export function ChapterWorld({ chapter }: WorldProps): JSX.Element {
  * materials (`.opacity`) and ceremony shader materials (`uOpacity` uniform),
  * including multi-material meshes. Marks everything transparent so the fade is
  * visible.
+ *
+ * A material may declare `userData.baseOpacity` to opt into being *partly*
+ * transparent at full world presence — glass, flames. The world fade is then a
+ * multiplier over that base rather than an absolute overwrite, which is what
+ * lets the conservatory glazing stay glazing once a transition settles.
+ * Materials that declare nothing default to a base of `1` and behave exactly as
+ * they did before.
+ *
+ * Meshes tagged `userData.castsShadow` also drop out of the shadow pass once
+ * they fade past the halfway point: both the incoming and outgoing world are
+ * mounted mid-transition, and two overlapping sets of shadow casters read as
+ * mud.
  */
 export function applyWorldFade(root: THREE.Object3D, o: number): void {
+  const dominant = o > 0.5;
+
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
+
+    if (obj.userData.castsShadow === true) obj.castShadow = dominant;
+
     const material = mesh.material;
     if (!material) return;
     const mats = Array.isArray(material) ? material : [material];
     for (const m of mats) {
+      const base = typeof m.userData?.baseOpacity === "number" ? m.userData.baseOpacity : 1;
+      const resolved = o * base;
+
       const shader = m as THREE.ShaderMaterial;
       if (shader.uniforms && shader.uniforms.uOpacity) {
-        shader.uniforms.uOpacity.value = o;
+        shader.uniforms.uOpacity.value = resolved;
       } else {
-        (m as THREE.Material).opacity = o;
+        (m as THREE.Material).opacity = resolved;
       }
       m.transparent = true;
-      m.depthWrite = o > 0.98;
+      // Only fully-opaque-by-design surfaces write depth; anything with a
+      // fractional base must keep depth writes off to sort correctly.
+      m.depthWrite = o > 0.98 && base > 0.98;
     }
   });
 }
