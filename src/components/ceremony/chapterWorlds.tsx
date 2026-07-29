@@ -19,23 +19,47 @@ import { useEffect, useMemo, useRef, type JSX } from "react";
 import * as THREE from "three";
 
 import { kelvinToRGB, type ChapterConfig, type ChapterId } from "./ceremonyConfig";
-import { CEREMONY_SHADERS, createCeremonyUniforms } from "./shaders";
+import {
+  CEREMONY_SHADERS,
+  createCeremonyUniforms,
+  createLeafUniforms,
+  createSilkUniforms,
+  type CeremonyUniforms,
+  type LeafUniforms,
+  type SilkUniforms,
+} from "./shaders";
 import {
   ashBedGeometry,
+  banyanAerialRootGeometry,
+  banyanCanopyShellGeometry,
+  banyanPropRootGeometry,
+  banyanTrunkGeometry,
+  bolsterGeometry,
+  brazierGeometry,
   buildMatrices,
   candelabraGeometry,
   candleGeometry,
   chairGeometry,
   conservatoryColumnGeometry,
   conservatoryFloorGeometry,
+  courtyardGeometry,
+  daybedCanopyTopGeometry,
+  daybedFrameGeometry,
+  daybedMattressGeometry,
+  daybedPostGeometry,
+  drapePanelGeometry,
+  drapeValanceGeometry,
   emberGeometry,
   flameGeometry,
   getEnvMap,
+  getMehendiMaterials,
   getReceptionMaterials,
   getWeddingMaterials,
   glassPaneGeometry,
   havanKundGeometry,
   kundRimBandGeometry,
+  lanternGeometry,
+  lanternGlowGeometry,
   mullionGeometry,
   pillarCollarGeometry,
   pillarShaftGeometry,
@@ -44,6 +68,13 @@ import {
   tableApronGeometry,
   tableLegGeometry,
   tableTopGeometry,
+  BANYAN_CANOPY_HALF_HEIGHT,
+  BANYAN_CANOPY_RADIUS,
+  BANYAN_SHELL_COUNT,
+  DAYBED_HALF_X,
+  DAYBED_HALF_Z,
+  DAYBED_RAIL_Y,
+  DRAPE_HEIGHT,
   type Placement,
 } from "./proceduralAssets";
 
@@ -141,6 +172,41 @@ function Part({
 }
 
 // -----------------------------------------------------------------------------
+// Shader material plumbing
+// -----------------------------------------------------------------------------
+
+/** A hex colour as the linear RGB triple the ceremony uniform block expects. */
+function rgb(hex: string): [number, number, number] {
+  const color = new THREE.Color(hex);
+  return [color.r, color.g, color.b];
+}
+
+/**
+ * Bind a chapter's palette and key light into the shared ceremony uniform
+ * block. Every ceremony shader reads these names, so this is the one place a
+ * chapter's look reaches the custom materials.
+ */
+function applyChapterUniforms(u: CeremonyUniforms, chapter: ChapterConfig): void {
+  u.uPrimary.value = rgb(chapter.palette.primary);
+  u.uSecondary.value = rgb(chapter.palette.secondary);
+  u.uEmissive.value = rgb(chapter.palette.emissive);
+
+  const light = new THREE.Color().setRGB(
+    ...kelvinToRGB(chapter.lighting.temperatureK),
+  );
+  u.uLightColor.value = [light.r, light.g, light.b];
+
+  const kd = chapter.lighting.keyDirection;
+  const len = Math.hypot(kd[0], kd[1], kd[2]) || 1;
+  u.uLightDir.value = [kd[0] / len, kd[1] / len, kd[2] / len];
+}
+
+/** Three.js wants an index signature; our uniform sets are typed structs. */
+function asUniformMap(u: CeremonyUniforms): { [name: string]: THREE.IUniform } {
+  return u as unknown as { [name: string]: THREE.IUniform };
+}
+
+// -----------------------------------------------------------------------------
 // Reusable beaten-gold material (own uniforms per instance)
 // -----------------------------------------------------------------------------
 
@@ -149,20 +215,7 @@ function GoldMaterial({ chapter }: { chapter: ChapterConfig }): JSX.Element {
 
   const uniforms = useMemo(() => {
     const u = createCeremonyUniforms();
-    const c = (hex: string): [number, number, number] => {
-      const col = new THREE.Color(hex);
-      return [col.r, col.g, col.b];
-    };
-    u.uPrimary.value = c(chapter.palette.primary);
-    u.uSecondary.value = c(chapter.palette.secondary);
-    u.uEmissive.value = c(chapter.palette.emissive);
-    const lc = new THREE.Color().setRGB(
-      ...kelvinToRGB(chapter.lighting.temperatureK),
-    );
-    u.uLightColor.value = [lc.r, lc.g, lc.b];
-    const kd = chapter.lighting.keyDirection;
-    const len = Math.hypot(kd[0], kd[1], kd[2]) || 1;
-    u.uLightDir.value = [kd[0] / len, kd[1] / len, kd[2] / len];
+    applyChapterUniforms(u, chapter);
     return u;
   }, [chapter]);
 
@@ -178,7 +231,7 @@ function GoldMaterial({ chapter }: { chapter: ChapterConfig }): JSX.Element {
       ref={ref}
       vertexShader={program.vertexShader}
       fragmentShader={program.fragmentShader}
-      uniforms={uniforms as unknown as { [name: string]: THREE.IUniform }}
+      uniforms={asUniformMap(uniforms)}
       transparent
     />
   );
@@ -318,82 +371,476 @@ function StepwellWorld({ chapter }: WorldProps): JSX.Element {
 }
 
 // -----------------------------------------------------------------------------
-// 3 — Mehendi: low-poly banyan canopy + floating swing
+// 3 — Mehendi: banyan courtyard with a silk-draped canopy daybed
 // -----------------------------------------------------------------------------
 
-function BanyanWorld({ chapter }: WorldProps): JSX.Element {
-  const { primary, secondary, emissive } = chapter.palette;
-  const swingRef = useRef<THREE.Group>(null);
-  const t = useRef(0);
+/** Top of the raised dais. The daybed is authored from its own base, and sits here. */
+const DAIS_Y = 0.18;
+
+/** Where the banyan stands, and where the centre of its canopy floats. */
+const BANYAN_TRUNK: readonly [number, number, number] = [-2.25, 0, -1.55];
+
+/**
+ * Canopy centre. Offset back and left of the daybed so the foliage arches
+ * *over* the silk canopy top rather than intersecting it — at this axis the
+ * underside clears the daybed's rail by about 0.15 units.
+ */
+const BANYAN_CANOPY: readonly [number, number, number] = [-1.0, 3.55, -0.8];
+
+/**
+ * Y of the canopy's lower surface at horizontal distance `r` from its axis.
+ * Roots and lantern cords are hung off this so they appear to grow out of the
+ * foliage rather than to start in mid-air.
+ */
+function canopyUndersideY(r: number): number {
+  const t = Math.min(r / BANYAN_CANOPY_RADIUS, 1);
+  return BANYAN_CANOPY[1] - BANYAN_CANOPY_HALF_HEIGHT * Math.sqrt(1 - t * t);
+}
+
+/** Horizontal distance from a point to the canopy axis. */
+function distanceToCanopyAxis(x: number, z: number): number {
+  return Math.hypot(x - BANYAN_CANOPY[0], z - BANYAN_CANOPY[2]);
+}
+
+/** The brazier stands off the dais, on the flagstones behind and right of the bed. */
+const BRAZIER_POS: readonly [number, number, number] = [1.62, 0, -1.15];
+
+/**
+ * World position of the brazier's flame. This is the point source the silk
+ * shader transmits — it sits *behind* the daybed relative to the chapter's
+ * camera, which is the whole reason the drapes glow from within.
+ */
+const HEARTH_POS: readonly [number, number, number] = [
+  BRAZIER_POS[0],
+  BRAZIER_POS[1] + 0.34,
+  BRAZIER_POS[2],
+];
+
+/** Peak intensity of the brazier's point light, before flicker and world fade. */
+const BRAZIER_LIGHT_INTENSITY = 5.4;
+
+const DAYBED_POSTS: readonly Placement[] = [
+  { position: [-DAYBED_HALF_X, 0, -DAYBED_HALF_Z] },
+  { position: [DAYBED_HALF_X, 0, -DAYBED_HALF_Z] },
+  { position: [-DAYBED_HALF_X, 0, DAYBED_HALF_Z] },
+  { position: [DAYBED_HALF_X, 0, DAYBED_HALF_Z] },
+];
+
+const DAYBED_BOLSTERS: readonly Placement[] = [
+  { position: [-0.78, 0.72, 0] },
+  { position: [0.78, 0.72, 0] },
+];
+
+/** Centre height of a drape panel, so its top edge tucks just under the rail. */
+const DRAPE_CENTRE_Y = DAYBED_RAIL_Y - 0.045 - DRAPE_HEIGHT / 2;
+
+/**
+ * Six panels: a pair at each long side and one closing each end. The pairs are
+ * parted at the centre so the camera reads *through* the gap to the bed, with
+ * lit cloth on either side of it.
+ */
+const DRAPE_PANELS: readonly Placement[] = [
+  { position: [-0.7, DRAPE_CENTRE_Y, DAYBED_HALF_Z + 0.055] },
+  { position: [0.7, DRAPE_CENTRE_Y, DAYBED_HALF_Z + 0.055] },
+  { position: [-0.7, DRAPE_CENTRE_Y, -DAYBED_HALF_Z - 0.055], rotation: [0, Math.PI, 0] },
+  { position: [0.7, DRAPE_CENTRE_Y, -DAYBED_HALF_Z - 0.055], rotation: [0, Math.PI, 0] },
+  { position: [-DAYBED_HALF_X - 0.055, DRAPE_CENTRE_Y, 0], rotation: [0, -Math.PI / 2, 0] },
+  { position: [DAYBED_HALF_X + 0.055, DRAPE_CENTRE_Y, 0], rotation: [0, Math.PI / 2, 0] },
+];
+
+/**
+ * Aerial roots dropped from the canopy. The angles are deliberately uneven so
+ * the fringe does not read as a radial array, and each root's origin is solved
+ * onto the canopy's own underside.
+ *
+ * The arc from ~0.2 to ~1.1 radians is left empty: that bearing points straight
+ * at the daybed, and a root dropped there would spear the drapes.
+ */
+const BANYAN_AERIAL_ROOTS: readonly Placement[] = (
+  [
+    [1.35, 2.1, 1.5],
+    [1.85, 1.95, 1.15],
+    [2.4, 2.15, 1.7],
+    [2.95, 2.0, 1.3],
+    [3.5, 2.1, 1.55],
+    [4.05, 1.95, 1.2],
+    [4.6, 2.05, 1.65],
+    [5.15, 1.9, 1.25],
+    [5.7, 2.15, 1.45],
+  ] as const
+).map(([angle, radius, drop]) => ({
+  position: [
+    BANYAN_CANOPY[0] + Math.cos(angle) * radius,
+    canopyUndersideY(radius),
+    BANYAN_CANOPY[2] + Math.sin(angle) * radius,
+  ] as const,
+  scale: [1, drop, 1] as const,
+}));
+
+/**
+ * The heavy prop roots that have reached the ground and taken hold. The shared
+ * geometry hangs one unit from its origin, so scaling Y by the drop and putting
+ * the origin at that height lands every tip exactly on the flagstones.
+ */
+const BANYAN_PROP_ROOTS: readonly Placement[] = (
+  [
+    [-2.85, -0.85, 1.0],
+    [-1.55, -2.35, 1.0],
+    [-2.85, -2.05, 0.85],
+  ] as const
+).map(([x, z, girth]) => {
+  const drop = canopyUndersideY(distanceToCanopyAxis(x, z));
+  return {
+    position: [x, drop, z] as const,
+    scale: [girth, drop, girth] as const,
+  };
+});
+
+/**
+ * Lanterns strung under the canopy. Each sits below the foliage underside at
+ * its own radius — so its cord is short and reaches real leaves — and clear of
+ * both the daybed's footprint and the brazier.
+ */
+const LANTERN_POSITIONS: readonly (readonly [number, number, number])[] = [
+  [-2.6, 2.05, 0.35],
+  [-1.9, 2.3, 1.35],
+  [0.1, 2.15, 1.35],
+  [-3.0, 1.95, -1.3],
+  [0.6, 1.85, -1.7],
+  [-1.45, 1.75, -2.2],
+  [1.15, 2.0, -1.5],
+];
+
+const MEHENDI_LANTERNS: readonly Placement[] = LANTERN_POSITIONS.map((position) => ({
+  position,
+}));
+
+/** The glowing body sits in the lantern's open waist. */
+const MEHENDI_LANTERN_GLOWS: readonly Placement[] = LANTERN_POSITIONS.map(
+  ([x, y, z]) => ({ position: [x, y + 0.13, z] as const }),
+);
+
+/**
+ * Each lantern hangs on a length of aerial root, which is exactly what a banyan
+ * offers to hang one from. The cords run up into the foliage and are lost in it.
+ */
+const MEHENDI_LANTERN_CORDS: readonly Placement[] = LANTERN_POSITIONS.map(
+  ([x, y, z]) => {
+    const top = canopyUndersideY(distanceToCanopyAxis(x, z));
+    return {
+      position: [x, top, z] as const,
+      scale: [0.34, Math.max(top - (y + 0.29), 0.05), 0.34] as const,
+    };
+  },
+);
+
+/** Coals banked in the brazier bowl, relative to the brazier's own origin. */
+const BRAZIER_COALS: readonly Placement[] = [
+  { position: [0.05, 0.26, 0.03], scale: 1.15 },
+  { position: [-0.07, 0.25, 0.06], scale: 0.8 },
+  { position: [0.02, 0.27, -0.08], scale: 1.0 },
+  { position: [-0.04, 0.25, -0.03], scale: 0.7 },
+  { position: [0.09, 0.25, -0.02], scale: 0.9 },
+];
+
+/**
+ * The Mehendi world's custom shader materials.
+ *
+ * These are created imperatively rather than as `<shaderMaterial>` JSX because
+ * several meshes share one material — the six drape panels are one material and
+ * one program across six draw calls, so the wind and firelight advance once per
+ * frame no matter how much cloth is on screen.
+ */
+interface MehendiShaders {
+  readonly drape: THREE.ShaderMaterial;
+  readonly canopyTop: THREE.ShaderMaterial;
+  readonly leaves: readonly THREE.ShaderMaterial[];
+  /** Silk uniform sets: the ones that also take the firelight pulse. */
+  readonly silkUniforms: readonly SilkUniforms[];
+  /** Foliage uniform sets. */
+  readonly leafUniforms: readonly LeafUniforms[];
+}
+
+function buildMehendiShaders(chapter: ChapterConfig): MehendiShaders {
+  const silkProgram = CEREMONY_SHADERS.rawSilk;
+  const leafProgram = CEREMONY_SHADERS.banyanLeaf;
+
+  const makeSilk = (
+    wind: number,
+    weave: number,
+  ): { material: THREE.ShaderMaterial; uniforms: SilkUniforms } => {
+    const uniforms = createSilkUniforms();
+    applyChapterUniforms(uniforms, chapter);
+    uniforms.uWind.value = wind;
+    uniforms.uWeave.value = weave;
+    uniforms.uHearthPos.value = [...HEARTH_POS];
+    return {
+      uniforms,
+      material: new THREE.ShaderMaterial({
+        vertexShader: silkProgram.vertexShader,
+        fragmentShader: silkProgram.fragmentShader,
+        uniforms: asUniformMap(uniforms),
+        // Cloth is seen from both faces: you look at the inside of the far
+        // drape through the parted near ones.
+        side: THREE.DoubleSide,
+        transparent: true,
+      }),
+    };
+  };
+
+  // Hanging panels billow; the taut canopy top only trembles.
+  const drape = makeSilk(0.045, 96);
+  const canopyTop = makeSilk(0.009, 78);
+
+  const leaves = Array.from({ length: BANYAN_SHELL_COUNT }, (_, i) => {
+    const uniforms = createLeafUniforms();
+    applyChapterUniforms(uniforms, chapter);
+    uniforms.uLayer.value = i / (BANYAN_SHELL_COUNT - 1);
+    // Offsetting the field per shell stops the layers lining up into rings.
+    uniforms.uSeed.value = i * 13.7;
+    uniforms.uWind.value = 0.055;
+    // Only the outer shells break their silhouette; the innermost is the solid
+    // mass the others are meant to reveal.
+    uniforms.uCutoff.value = i === 0 ? 0.48 : i === 1 ? 0.38 : 0;
+    return {
+      uniforms,
+      material: new THREE.ShaderMaterial({
+        vertexShader: leafProgram.vertexShader,
+        fragmentShader: leafProgram.fragmentShader,
+        uniforms: asUniformMap(uniforms),
+        transparent: true,
+      }),
+    };
+  });
+
+  return {
+    drape: drape.material,
+    canopyTop: canopyTop.material,
+    leaves: leaves.map((l) => l.material),
+    silkUniforms: [drape.uniforms, canopyTop.uniforms],
+    leafUniforms: leaves.map((l) => l.uniforms),
+  };
+}
+
+const mehendiShaderCache = new Map<ChapterId, MehendiShaders>();
+
+/**
+ * Cached per chapter and never disposed — the same contract the geometry and
+ * PBR material sets in `proceduralAssets` are built on, and for the same
+ * reason: worlds unmount and remount on every cross-fade, and recompiling two
+ * shader programs per transition is a visible hitch. The cache is bounded at
+ * one entry, since only this chapter uses these programs.
+ *
+ * Owning the set at module scope also keeps it out of the component's hook
+ * graph, which matters: a uniform block has to be written every frame, and a
+ * value React has memoised is — correctly — not allowed to be.
+ */
+function getMehendiShaders(chapter: ChapterConfig): MehendiShaders {
+  let set = mehendiShaderCache.get(chapter.id);
+  if (!set) {
+    set = buildMehendiShaders(chapter);
+    mehendiShaderCache.set(chapter.id, set);
+  }
+  return set;
+}
+
+function MehendiWorld({ chapter }: WorldProps): JSX.Element {
+  const renderer = useThree((state) => state.gl);
+  const env = useMemo(() => getEnvMap(renderer, "warm"), [renderer]);
+  const materials = useMemo(() => getMehendiMaterials(chapter, env), [chapter, env]);
+  const shaders = useMemo(() => getMehendiShaders(chapter), [chapter]);
+
+  const flameRef = useRef<THREE.Group>(null);
+  const fireLightRef = useRef<THREE.PointLight>(null);
+  const clock = useRef(0);
 
   useFrame((_state, delta) => {
-    t.current += delta;
-    if (swingRef.current) {
-      swingRef.current.rotation.x = Math.sin(t.current * 1.1) * 0.18;
+    clock.current += delta;
+    const t = clock.current;
+
+    // Re-fetched rather than closed over: both are module-cached lookups (a
+    // `Map.get` and a few early-outs), and reaching the mutable uniform blocks
+    // through the cache instead of through a memoised binding is what keeps
+    // this loop's writes legitimate.
+    const live = getMehendiShaders(chapter);
+    const surfaces = getMehendiMaterials(chapter, env);
+
+    // Three incommensurate rates, so the fire never settles into a period.
+    const pulse =
+      0.74 +
+      Math.sin(t * 6.3) * 0.14 +
+      Math.sin(t * 11.7 + 1.3) * 0.08 +
+      Math.sin(t * 19.1 + 2.7) * 0.04;
+
+    for (const uniforms of live.silkUniforms) {
+      uniforms.uTime.value = t;
+      uniforms.uHearthPulse.value = pulse;
+    }
+    for (const uniforms of live.leafUniforms) {
+      uniforms.uTime.value = t;
+    }
+
+    // `applyWorldFade` writes `uOpacity` on every material each frame, so the
+    // drape's own uniform is a free, exact read of this world's presence. The
+    // brazier's *light* has to be scaled by it explicitly: the fade helper
+    // walks materials, and a point light left burning through a cross-fade
+    // would keep lighting the incoming chapter.
+    const presence = live.silkUniforms[0].uOpacity.value;
+
+    if (fireLightRef.current) {
+      fireLightRef.current.intensity = BRAZIER_LIGHT_INTENSITY * pulse * presence;
+    }
+
+    surfaces.glow.emissiveIntensity =
+      2.1 + Math.sin(t * 3.1) * 0.3 + Math.sin(t * 5.7 + 2.0) * 0.18;
+    surfaces.coal.emissiveIntensity = 1.5 + pulse * 0.9;
+
+    const flame = flameRef.current;
+    if (flame) {
+      const beat = Math.sin(t * 5.9);
+      const flicker = Math.sin(t * 15.1 + 0.7) * 0.06;
+      flame.scale.set(
+        0.3 * (1 + flicker * 0.5),
+        0.3 * (0.88 + Math.abs(beat) * 0.3 + flicker),
+        0.3 * (1 + flicker * 0.5),
+      );
+      flame.rotation.y = beat * 0.14;
     }
   });
 
   return (
-    <group position={[0, 0, 0]}>
-      {/* Trunk */}
-      <mesh position={[0, 1.0, 0]}>
-        <cylinderGeometry args={[0.28, 0.42, 2.0, 7]} />
-        <meshStandardMaterial color={secondary} roughness={0.9} transparent />
-      </mesh>
-      {/* Canopy — flattened low-poly dome */}
-      <mesh position={[0, 2.5, 0]} scale={[1, 0.6, 1]}>
-        <icosahedronGeometry args={[1.7, 1]} />
-        <meshStandardMaterial
-          color={primary}
-          flatShading
-          roughness={0.85}
-          transparent
+    <group>
+      {/* Flagstone courtyard with the dais merged in — the shadow catcher. */}
+      <Part geometry={courtyardGeometry()} material={materials.stone} castShadow={false} />
+
+      {/* --- the banyan ----------------------------------------------------- */}
+      <Part
+        geometry={banyanTrunkGeometry()}
+        material={materials.bark}
+        position={BANYAN_TRUNK as [number, number, number]}
+      />
+      <InstancedPart
+        geometry={banyanPropRootGeometry()}
+        material={materials.bark}
+        placements={BANYAN_PROP_ROOTS}
+      />
+      <InstancedPart
+        geometry={banyanAerialRootGeometry()}
+        material={materials.bark}
+        placements={BANYAN_AERIAL_ROOTS}
+      />
+
+      {/* Three concentric foliage shells, outermost first. Each shades itself
+          as a slab of leaves rather than a surface; see the `banyanLeaf`
+          program. They are deliberately kept *out* of the shadow pass: the
+          depth pass has no access to the fragment cutout, so a canopy that cast
+          would drop one solid dome of shadow over the whole daybed — the exact
+          opposite of the dappling the cutout exists to produce. */}
+      {shaders.leaves.map((material, i) => (
+        <Part
+          key={i}
+          geometry={banyanCanopyShellGeometry(i)}
+          material={material}
+          position={BANYAN_CANOPY as [number, number, number]}
+          castShadow={false}
+          receiveShadow={false}
         />
-      </mesh>
-      {/* Hanging aerial roots */}
-      {Array.from({ length: 7 }).map((_, i) => {
-        const a = (i / 7) * Math.PI * 2;
-        const r = 1.2;
-        return (
-          <mesh
+      ))}
+
+      {/* --- the canopy daybed ---------------------------------------------- */}
+      <group position={[0, DAIS_Y, 0]}>
+        <InstancedPart
+          geometry={daybedPostGeometry()}
+          material={materials.teak}
+          placements={DAYBED_POSTS}
+        />
+        <Part geometry={daybedFrameGeometry()} material={materials.teak} />
+        <Part
+          geometry={daybedMattressGeometry()}
+          material={materials.linen}
+          position={[0, 0.54, 0]}
+        />
+        <InstancedPart
+          geometry={bolsterGeometry()}
+          material={materials.linen}
+          placements={DAYBED_BOLSTERS}
+        />
+
+        {/* Raw silk. Wind is a vertex displacement in the material, so the
+            depth pass — which uses three's own depth material and cannot see
+            our vertex stage — casts the panel's rest pose. The sway peaks at
+            45mm, well under the softness of the PCF kernel, so the mismatch
+            never surfaces. */}
+        <Part
+          geometry={daybedCanopyTopGeometry()}
+          material={shaders.canopyTop}
+          position={[0, DAYBED_RAIL_Y + 0.035, 0]}
+        />
+        <Part geometry={drapeValanceGeometry()} material={shaders.drape} />
+        {DRAPE_PANELS.map((panel, i) => (
+          <Part
             key={i}
-            position={[Math.cos(a) * r, 1.6, Math.sin(a) * r]}
-          >
-            <cylinderGeometry args={[0.03, 0.03, 1.2, 5]} />
-            <meshStandardMaterial color={secondary} roughness={0.9} transparent />
-          </mesh>
-        );
-      })}
-      {/* Floating swing */}
-      <group ref={swingRef} position={[1.7, 2.4, 0]}>
-        <mesh position={[-0.4, -0.6, 0]}>
-          <cylinderGeometry args={[0.02, 0.02, 1.2, 5]} />
-          <meshStandardMaterial color={emissive} roughness={0.6} transparent />
-        </mesh>
-        <mesh position={[0.4, -0.6, 0]}>
-          <cylinderGeometry args={[0.02, 0.02, 1.2, 5]} />
-          <meshStandardMaterial color={emissive} roughness={0.6} transparent />
-        </mesh>
-        <mesh position={[0, -1.2, 0]}>
-          <boxGeometry args={[1.0, 0.08, 0.35]} />
-          <meshStandardMaterial color={secondary} roughness={0.7} transparent />
-        </mesh>
+            geometry={drapePanelGeometry()}
+            material={shaders.drape}
+            position={panel.position}
+            rotation={panel.rotation}
+          />
+        ))}
       </group>
-      {/* Lantern glow */}
-      {Array.from({ length: 5 }).map((_, i) => {
-        const a = (i / 5) * Math.PI * 2 + 0.5;
-        return (
-          <mesh key={i} position={[Math.cos(a) * 1.5, 2.1, Math.sin(a) * 1.5]}>
-            <sphereGeometry args={[0.1, 10, 10]} />
-            <meshStandardMaterial
-              color={emissive}
-              emissive={emissive}
-              emissiveIntensity={2.0}
-              transparent
-            />
-          </mesh>
-        );
-      })}
+
+      {/* --- lanterns ------------------------------------------------------- */}
+      <InstancedPart
+        geometry={banyanAerialRootGeometry()}
+        material={materials.bark}
+        placements={MEHENDI_LANTERN_CORDS}
+        castShadow={false}
+      />
+      <InstancedPart
+        geometry={lanternGeometry()}
+        material={materials.brass}
+        placements={MEHENDI_LANTERNS}
+      />
+      <InstancedPart
+        geometry={lanternGlowGeometry()}
+        material={materials.glow}
+        placements={MEHENDI_LANTERN_GLOWS}
+        castShadow={false}
+      />
+
+      {/* --- the brazier ---------------------------------------------------- */}
+      <group position={BRAZIER_POS as [number, number, number]}>
+        <Part geometry={brazierGeometry()} material={materials.brass} />
+        <InstancedPart
+          geometry={emberGeometry()}
+          material={materials.coal}
+          placements={BRAZIER_COALS}
+          castShadow={false}
+        />
+        <group ref={flameRef} position={[0, 0.28, 0]}>
+          <mesh
+            geometry={flameGeometry()}
+            material={materials.flame}
+            castShadow={false}
+            receiveShadow={false}
+            renderOrder={2}
+            userData={{ castsShadow: false }}
+            dispose={null}
+          />
+        </group>
+
+        {/* The firelight the silk transmits, as an actual scene light so the
+            brass, teak and flagstones react to the same source the cloth does.
+            It does not cast — one shadow-casting light per chapter is the
+            budget, and that is the key. */}
+        <pointLight
+          ref={fireLightRef}
+          position={[0, 0.34, 0]}
+          color={chapter.palette.emissive}
+          intensity={BRAZIER_LIGHT_INTENSITY}
+          distance={7}
+          decay={2}
+        />
+      </group>
     </group>
   );
 }
@@ -900,7 +1347,7 @@ function LibraryHearthWorld({ chapter }: WorldProps): JSX.Element {
 const WORLD_BY_ID: Record<ChapterId, (props: WorldProps) => JSX.Element> = {
   proposal: GlasshouseWorld,
   engagement: StepwellWorld,
-  mehendi: BanyanWorld,
+  mehendi: MehendiWorld,
   sangeet: AmphitheaterWorld,
   wedding: HavanKundWorld,
   reception: ConservatoryWorld,

@@ -60,20 +60,29 @@ function wrap(value: number, period: number): number {
 }
 
 /**
- * Value noise with smoothstep interpolation, tiling seamlessly every `period`
- * units so the resulting texture can use `RepeatWrapping` without a visible
- * seam.
+ * Value noise with smoothstep interpolation, tiling seamlessly every
+ * `periodX`/`periodY` units so the resulting texture can use `RepeatWrapping`
+ * without a visible seam.
+ *
+ * The two axes carry independent periods so a field can be *stretched*: bark
+ * and sawn timber are long-grained, and a square lattice cannot express that.
  */
-function valueNoise(x: number, y: number, period: number, seed: number): number {
+function valueNoise(
+  x: number,
+  y: number,
+  periodX: number,
+  periodY: number,
+  seed: number,
+): number {
   const x0 = Math.floor(x);
   const y0 = Math.floor(y);
   const fx = x - x0;
   const fy = y - y0;
 
-  const x0w = wrap(x0, period);
-  const x1w = wrap(x0 + 1, period);
-  const y0w = wrap(y0, period);
-  const y1w = wrap(y0 + 1, period);
+  const x0w = wrap(x0, periodX);
+  const x1w = wrap(x0 + 1, periodX);
+  const y0w = wrap(y0, periodY);
+  const y1w = wrap(y0 + 1, periodY);
 
   // Smoothstep the interpolants so the field has continuous first derivatives —
   // essential, because we differentiate it to build the normal map.
@@ -90,27 +99,32 @@ function valueNoise(x: number, y: number, period: number, seed: number): number 
   return top + (bottom - top) * sy;
 }
 
-/** Fractal Brownian motion. Period doubles with frequency to stay tileable. */
+/** Fractal Brownian motion. Periods double with frequency to stay tileable. */
 function fbm(
   x: number,
   y: number,
-  basePeriod: number,
+  basePeriodX: number,
+  basePeriodY: number,
   octaves: number,
   seed: number,
   gain = 0.5,
 ): number {
   let amplitude = 1;
   let frequency = 1;
-  let period = basePeriod;
+  let periodX = basePeriodX;
+  let periodY = basePeriodY;
   let sum = 0;
   let norm = 0;
 
   for (let o = 0; o < octaves; o++) {
-    sum += amplitude * valueNoise(x * frequency, y * frequency, period, seed + o * 101);
+    sum +=
+      amplitude *
+      valueNoise(x * frequency, y * frequency, periodX, periodY, seed + o * 101);
     norm += amplitude;
     amplitude *= gain;
     frequency *= 2;
-    period *= 2;
+    periodX *= 2;
+    periodY *= 2;
   }
   return sum / norm;
 }
@@ -148,8 +162,15 @@ const TEXTURE_SIZE = 256;
 
 interface SurfaceSpec {
   readonly seed: number;
-  /** Noise cells across the texture. Higher = finer grain. */
+  /** Noise cells down the texture (V). Higher = finer grain. */
   readonly period: number;
+  /**
+   * Noise cells across the texture (U). Defaults to `period`. Setting the two
+   * apart stretches the grain: a low `period` with a high `periodX` gives long
+   * features running along V, which is what bark and sawn timber look like on a
+   * lathed or extruded surface (U runs around, V runs along).
+   */
+  readonly periodX?: number;
   readonly octaves: number;
   /** Height-field gain when differentiating into a normal. */
   readonly bumpStrength: number;
@@ -173,13 +194,16 @@ function clamp01(v: number): number {
 
 function buildHeightField(spec: SurfaceSpec, size: number): Float32Array {
   const field = new Float32Array(size * size);
-  const noiseScale = spec.period / size;
+  const periodX = spec.periodX ?? spec.period;
+  const periodY = spec.period;
+  const scaleX = periodX / size;
+  const scaleY = periodY / size;
   const dentScale = spec.dentCells ? spec.dentCells / size : 0;
   const dentDepth = spec.dentDepth ?? 0;
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      let h = fbm(x * noiseScale, y * noiseScale, spec.period, spec.octaves, spec.seed);
+      let h = fbm(x * scaleX, y * scaleY, periodX, periodY, spec.octaves, spec.seed);
       if (spec.dentCells) {
         // Squaring the distance turns each cell into a shallow dome, which
         // reads as a planished hammer strike rather than a crater.
@@ -299,6 +323,55 @@ const SURFACE_SPECS = {
     bumpStrength: 1.1,
     roughBase: 0.52,
     roughVariance: 0.16,
+  },
+  // Banyan bark: deep vertical fissures. Long grain along V, fine across U.
+  bark: {
+    seed: 89,
+    period: 3,
+    periodX: 20,
+    octaves: 4,
+    bumpStrength: 3.4,
+    roughBase: 0.93,
+    roughVariance: 0.1,
+  },
+  // Oiled teak for the daybed frame — the same long grain, far shallower.
+  teak: {
+    seed: 97,
+    period: 2,
+    periodX: 16,
+    octaves: 3,
+    bumpStrength: 1.3,
+    roughBase: 0.44,
+    roughVariance: 0.2,
+  },
+  // Lantern and hardware brass: finer planishing than the wedding bronze.
+  brass: {
+    seed: 103,
+    period: 4,
+    octaves: 3,
+    bumpStrength: 1.2,
+    roughBase: 0.29,
+    roughVariance: 0.18,
+    dentCells: 7,
+    dentDepth: 0.4,
+  },
+  // Slub-woven cushion linen. High frequency, isotropic, near-matte.
+  linen: {
+    seed: 109,
+    period: 12,
+    octaves: 2,
+    bumpStrength: 2.0,
+    roughBase: 0.78,
+    roughVariance: 0.12,
+  },
+  // Weathered courtyard flagstone under the banyan.
+  courtyardStone: {
+    seed: 127,
+    period: 6,
+    octaves: 4,
+    bumpStrength: 1.8,
+    roughBase: 0.72,
+    roughVariance: 0.18,
   },
 } as const satisfies Record<string, SurfaceSpec>;
 
@@ -623,6 +696,146 @@ function at(x: number, y: number, z: number): THREE.Matrix4 {
 }
 
 // -----------------------------------------------------------------------------
+// Organic displacement
+//
+// Everything below deforms an already-built buffer in place and recomputes
+// normals. All three sample `fbm` as a pure function of *position*, which is the
+// property that makes them safe on non-indexed geometry: duplicated vertices
+// sitting at the same point receive the same displacement, so seams stay welded
+// and no cracks open up.
+// -----------------------------------------------------------------------------
+
+/**
+ * Push every vertex out along its XZ radius by a low-frequency field, so a
+ * lathed solid stops reading as a surface of revolution. `lobes` is the number
+ * of noise cells around the circumference and must be an integer, or the field
+ * will not close at the ±π seam.
+ */
+function roughenRadial(
+  geometry: THREE.BufferGeometry,
+  amount: number,
+  lobes: number,
+  seed: number,
+): THREE.BufferGeometry {
+  const pos = geometry.attributes.position as THREE.BufferAttribute;
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  if (!box) return geometry;
+  const spanY = Math.max(box.max.y - box.min.y, 1e-3);
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    if (Math.hypot(x, z) < 1e-4) continue; // pole vertex — nothing to push
+
+    const u = (Math.atan2(z, x) / (Math.PI * 2) + 0.5) * lobes;
+    const v = ((y - box.min.y) / spanY) * 3;
+    const k = 1 + (fbm(u, v, lobes, 3, 3, seed) - 0.5) * amount;
+
+    pos.setX(i, x * k);
+    pos.setZ(i, z * k);
+  }
+
+  pos.needsUpdate = true;
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/**
+ * A lumpy, squashed foliage shell: an icosahedron whose radius is modulated by
+ * two octaves of noise in spherical coordinates. `IcosahedronGeometry` is
+ * non-indexed, so `computeVertexNormals` leaves it flat-shaded — exactly the
+ * faceted read the low-poly canopy wants, with the leaf shader supplying the
+ * organic detail on top.
+ */
+function lumpyShell(
+  radius: number,
+  detail: number,
+  squashY: number,
+  amount: number,
+  seed: number,
+): THREE.BufferGeometry {
+  const geometry = new THREE.IcosahedronGeometry(radius, detail);
+  const pos = geometry.attributes.position as THREE.BufferAttribute;
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const len = Math.hypot(x, y, z) || 1;
+
+    // Azimuth wraps over `6` cells; elevation runs 0..4 pole to pole.
+    const u = (Math.atan2(z, x) / (Math.PI * 2) + 0.5) * 6;
+    const v = (Math.acos(Math.min(Math.max(y / len, -1), 1)) / Math.PI) * 4;
+
+    const broad = fbm(u, v, 6, 4, 3, seed) - 0.5;
+    const fine = fbm(u * 3, v * 3, 18, 12, 2, seed + 17) - 0.5;
+    const k = 1 + broad * amount + fine * amount * 0.45;
+
+    pos.setXYZ(i, x * k, y * k * squashY, z * k);
+  }
+
+  pos.needsUpdate = true;
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/**
+ * A hanging cloth panel: a subdivided plane with pleats and a slight inward
+ * catenary baked in, standing in the XY plane with its face along +Z.
+ *
+ * The folds are *geometry*, not a normal map — the silk shader needs real
+ * curvature for its lustre to sweep across, and the panel is cheap enough
+ * (`segU × segV` quads) that there is no reason to fake it.
+ *
+ * UVs come straight from `PlaneGeometry`, so `uv.y == 1` at the top edge. That
+ * is the contract the silk vertex stage reads its sway envelope from: the top
+ * edge is the rail, and it does not move.
+ */
+function pleatedPanel(
+  width: number,
+  height: number,
+  folds: number,
+  foldDepth: number,
+  segU: number,
+  segV: number,
+  seed: number,
+): THREE.BufferGeometry {
+  const geometry = new THREE.PlaneGeometry(width, height, segU, segV);
+  const pos = geometry.attributes.position as THREE.BufferAttribute;
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const u = x / width + 0.5;
+    // 0 at the hem, 1 at the rail. Clamped because `PlaneGeometry` builds its
+    // rows by accumulation, so the last one can land a few ulps past the half
+    // height — and a fractional `Math.pow` of the resulting -1e-17 is NaN,
+    // which propagates into the whole buffer.
+    const v = Math.min(Math.max(pos.getY(i) / height + 0.5, 0), 1);
+
+    // Pleats are pinched where the cloth is tied off and open toward the hem.
+    const open = 0.32 + 0.68 * Math.pow(1 - v, 1.3);
+
+    let z = Math.sin(u * folds * Math.PI * 2) * foldDepth * open;
+    // Irregularity, so the pleating is hand-hung rather than machine-perfect.
+    z += (fbm(u * 5, v * 4, 5, 4, 2, seed) - 0.5) * foldDepth * 0.55 * open;
+    // The cloth falls a little away from the frame as it descends.
+    z -= (1 - v) * (1 - v) * foldDepth * 0.5;
+
+    pos.setZ(i, z);
+    pos.setX(i, x * (1 + (1 - v) * 0.1)); // slight flare at the hem
+  }
+
+  pos.needsUpdate = true;
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+// -----------------------------------------------------------------------------
 // Shared geometry
 // -----------------------------------------------------------------------------
 
@@ -932,6 +1145,348 @@ export function plateGeometry(): THREE.BufferGeometry {
   );
 }
 
+// -----------------------------------------------------------------------------
+// Mehendi — banyan courtyard and canopy daybed
+//
+// The daybed is authored around its own base: local Y 0 is the underside of the
+// posts, and the canopy rail sits at `DAYBED_RAIL_Y`. The world places the whole
+// group on top of the dais.
+// -----------------------------------------------------------------------------
+
+/** Height of the daybed's canopy rail above its own base. */
+export const DAYBED_RAIL_Y = 2.02;
+/** Half-extents of the daybed footprint, post centre to post centre. */
+export const DAYBED_HALF_X = 1.02;
+export const DAYBED_HALF_Z = 0.6;
+
+/** Rotate-then-translate placement matrix, for merged parts that must turn. */
+function place(x: number, y: number, z: number, rotY = 0): THREE.Matrix4 {
+  return new THREE.Matrix4().makeRotationY(rotY).setPosition(x, y, z);
+}
+
+/** Flagstone courtyard plate with the daybed's raised dais merged into it. */
+export function courtyardGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("courtyard", () =>
+    mergeParts([
+      { geometry: bevelledBox(7.0, 0.1, 5.8, 0.03), matrix: at(0, -0.05, 0) },
+      { geometry: bevelledBox(2.9, 0.18, 2.0, 0.04), matrix: at(0, 0.09, 0) },
+    ]),
+  );
+}
+
+/**
+ * Banyan trunk. A hand-walked profile with two knots, then pushed off-round by
+ * `roughenRadial` — a perfectly circular trunk is the single thing that most
+ * gives away a lathed tree.
+ */
+export function banyanTrunkGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("banyanTrunk", () =>
+    roughenRadial(
+      lathe(
+        [
+          [0.0, 0.0],
+          [0.62, 0.0],
+          [0.5, 0.14],
+          [0.42, 0.34],
+          [0.375, 0.7],
+          [0.355, 1.05],
+          [0.385, 1.22],
+          [0.335, 1.42],
+          [0.305, 1.85],
+          [0.325, 2.05],
+          [0.275, 2.35],
+          [0.245, 2.65],
+          [0.3, 2.85],
+          [0.36, 2.95],
+          [0.0, 3.0],
+        ],
+        14,
+      ),
+      0.24,
+      7,
+      41,
+    ),
+  );
+}
+
+/** Slender hanging aerial root, one unit long. Instanced and scaled to length. */
+export function banyanAerialRootGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("banyanAerialRoot", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.05, -0.02],
+        [0.042, -0.3],
+        [0.03, -0.62],
+        [0.022, -0.85],
+        [0.0, -1.0],
+      ],
+      6,
+    ),
+  );
+}
+
+/** Thick prop root that has reached the ground and taken hold, one unit long. */
+export function banyanPropRootGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("banyanPropRoot", () =>
+    roughenRadial(
+      lathe(
+        [
+          [0.0, 0.0],
+          [0.11, -0.05],
+          [0.085, -0.35],
+          [0.07, -0.7],
+          [0.09, -0.92],
+          [0.135, -1.0],
+          [0.0, -1.0],
+        ],
+        8,
+      ),
+      0.2,
+      5,
+      59,
+    ),
+  );
+}
+
+/** Radius, tessellation, squash, lumpiness and seed of each foliage shell. */
+const BANYAN_SHELLS = [
+  { radius: 2.6, detail: 2, squashY: 0.52, amount: 0.3, seed: 5 },
+  { radius: 2.25, detail: 2, squashY: 0.55, amount: 0.34, seed: 19 },
+  { radius: 1.75, detail: 1, squashY: 0.6, amount: 0.38, seed: 33 },
+] as const;
+
+/** How many concentric foliage shells the canopy is built from. */
+export const BANYAN_SHELL_COUNT = BANYAN_SHELLS.length;
+
+/**
+ * The outer shell's envelope, exported so the world can hang roots and lanterns
+ * off the canopy's actual underside rather than off a duplicated guess.
+ */
+export const BANYAN_CANOPY_RADIUS = BANYAN_SHELLS[0].radius;
+export const BANYAN_CANOPY_HALF_HEIGHT =
+  BANYAN_SHELLS[0].radius * BANYAN_SHELLS[0].squashY;
+
+/** One foliage shell, `index` 0 (outermost) → 2 (innermost). */
+export function banyanCanopyShellGeometry(index: number): THREE.BufferGeometry {
+  const shell = BANYAN_SHELLS[index];
+  return cachedGeometry(`banyanShell${index}`, () =>
+    lumpyShell(shell.radius, shell.detail, shell.squashY, shell.amount, shell.seed),
+  );
+}
+
+/** Turned daybed post, base at local Y 0, finial just above the rail. */
+export function daybedPostGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("daybedPost", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.075, 0.0],
+        [0.075, 0.035],
+        [0.055, 0.07],
+        [0.046, 0.3],
+        [0.052, 0.36],
+        [0.042, 0.42],
+        [0.04, 1.8],
+        [0.05, 1.88],
+        [0.044, 1.96],
+        [0.038, 2.02],
+        [0.055, 2.06],
+        [0.03, 2.1],
+        [0.0, 2.12],
+      ],
+      14,
+    ),
+  );
+}
+
+/**
+ * The daybed's teak carcass in one buffer: the canopy rail rectangle overhead,
+ * the bed rails, and the slatted platform.
+ */
+export function daybedFrameGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("daybedFrame", () => {
+    const spanX = DAYBED_HALF_X * 2 + 0.08;
+    const spanZ = DAYBED_HALF_Z * 2 + 0.06;
+    return mergeParts([
+      // Canopy rail rectangle.
+      {
+        geometry: bevelledBox(spanX, 0.06, 0.055, 0.014),
+        matrix: at(0, DAYBED_RAIL_Y, -DAYBED_HALF_Z),
+      },
+      {
+        geometry: bevelledBox(spanX, 0.06, 0.055, 0.014),
+        matrix: at(0, DAYBED_RAIL_Y, DAYBED_HALF_Z),
+      },
+      {
+        geometry: bevelledBox(0.055, 0.06, spanZ, 0.014),
+        matrix: at(-DAYBED_HALF_X, DAYBED_RAIL_Y, 0),
+      },
+      {
+        geometry: bevelledBox(0.055, 0.06, spanZ, 0.014),
+        matrix: at(DAYBED_HALF_X, DAYBED_RAIL_Y, 0),
+      },
+      // Bed rails.
+      {
+        geometry: bevelledBox(spanX, 0.09, 0.07, 0.018),
+        matrix: at(0, 0.4, -DAYBED_HALF_Z),
+      },
+      {
+        geometry: bevelledBox(spanX, 0.09, 0.07, 0.018),
+        matrix: at(0, 0.4, DAYBED_HALF_Z),
+      },
+      {
+        geometry: bevelledBox(0.07, 0.09, spanZ, 0.018),
+        matrix: at(-DAYBED_HALF_X, 0.4, 0),
+      },
+      {
+        geometry: bevelledBox(0.07, 0.09, spanZ, 0.018),
+        matrix: at(DAYBED_HALF_X, 0.4, 0),
+      },
+      // Platform.
+      { geometry: bevelledBox(2.0, 0.04, 1.16, 0.01), matrix: at(0, 0.44, 0) },
+    ]);
+  });
+}
+
+/** Deep, soft mattress — a rounded slab with a generous bevel. */
+export function daybedMattressGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("daybedMattress", () =>
+    bevelledSlab(roundedRectShape(2.02, 1.18, 0.1), 0.16, 0.05),
+  );
+}
+
+/** Turned bolster cushion, lying along Z and centred on its own origin. */
+export function bolsterGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("bolster", () => {
+    const geometry = lathe(
+      [
+        [0.0, 0.0],
+        [0.07, 0.005],
+        [0.1, 0.03],
+        [0.105, 0.08],
+        [0.105, 0.62],
+        [0.1, 0.67],
+        [0.07, 0.695],
+        [0.0, 0.7],
+      ],
+      14,
+    );
+    // The lathe runs up +Y; lay it down along +Z and centre it.
+    geometry.rotateX(-Math.PI / 2);
+    geometry.translate(0, 0, -0.35);
+    return geometry;
+  });
+}
+
+/** Height of a drape panel — rail to hem. */
+export const DRAPE_HEIGHT = 1.95;
+
+/** A hanging silk drape panel. Its top edge is the rail; see {@link pleatedPanel}. */
+export function drapePanelGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("drapePanel", () =>
+    pleatedPanel(0.86, DRAPE_HEIGHT, 3.5, 0.075, 12, 16, 73),
+  );
+}
+
+/** Pleated valance skirting the canopy rail on all four sides, merged to one buffer. */
+export function drapeValanceGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("drapeValance", () => {
+    const long = pleatedPanel(2.14, 0.3, 7, 0.045, 16, 3, 81);
+    const short = pleatedPanel(1.28, 0.3, 4, 0.045, 10, 3, 87);
+    const y = DAYBED_RAIL_Y - 0.18;
+    const outZ = DAYBED_HALF_Z + 0.035;
+    const outX = DAYBED_HALF_X + 0.035;
+
+    const merged = mergeParts([
+      { geometry: long, matrix: place(0, y, outZ) },
+      { geometry: long, matrix: place(0, y, -outZ, Math.PI) },
+      { geometry: short, matrix: place(-outX, y, 0, -Math.PI / 2) },
+      { geometry: short, matrix: place(outX, y, 0, Math.PI / 2) },
+    ]);
+    long.dispose();
+    short.dispose();
+    return merged;
+  });
+}
+
+/**
+ * The taut silk canopy top. Built face-up with a slight central sag so the
+ * cloth does not read as a rigid lid.
+ */
+export function daybedCanopyTopGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("daybedCanopyTop", () => {
+    const geometry = new THREE.PlaneGeometry(2.12, 1.28, 10, 6);
+    const pos = geometry.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      const u = pos.getX(i) / 2.12;
+      const v = pos.getY(i) / 1.28;
+      // Sag is deepest at the centre and pinned along all four edges.
+      pos.setZ(i, -0.055 * (1 - 4 * u * u) * (1 - 4 * v * v));
+    }
+    pos.needsUpdate = true;
+    geometry.computeVertexNormals();
+    // The plane faces +Z; stand it up so it faces +Y.
+    geometry.rotateX(-Math.PI / 2);
+    geometry.computeBoundingSphere();
+    return geometry;
+  });
+}
+
+/** Turned brass lantern with an open waist for the flame. Base at local Y 0. */
+export function lanternGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("lantern", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.055, 0.0],
+        [0.062, 0.02],
+        [0.045, 0.045],
+        [0.038, 0.055],
+        [0.075, 0.075],
+        [0.078, 0.09],
+        [0.052, 0.1],
+        [0.045, 0.16],
+        [0.07, 0.185],
+        [0.072, 0.2],
+        [0.04, 0.225],
+        [0.028, 0.26],
+        [0.02, 0.3],
+        [0.0, 0.31],
+      ],
+      10,
+    ),
+  );
+}
+
+/** The glowing body inside a lantern. */
+export function lanternGlowGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("lanternGlow", () => new THREE.SphereGeometry(0.058, 10, 8));
+}
+
+/** Footed brass brazier — the firelight the silk drapes transmit. */
+export function brazierGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("brazier", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.13, 0.0],
+        [0.12, 0.025],
+        [0.055, 0.06],
+        [0.05, 0.14],
+        [0.09, 0.19],
+        [0.22, 0.31],
+        [0.235, 0.35],
+        [0.225, 0.375],
+        [0.205, 0.355],
+        [0.075, 0.24],
+        [0.0, 0.235],
+      ],
+      18,
+    ),
+  );
+}
+
 // =============================================================================
 // Materials
 // =============================================================================
@@ -959,6 +1514,17 @@ export interface WeddingMaterials {
   readonly flame: THREE.MeshStandardMaterial;
 }
 
+export interface MehendiMaterials {
+  readonly bark: THREE.MeshStandardMaterial;
+  readonly teak: THREE.MeshStandardMaterial;
+  readonly brass: THREE.MeshStandardMaterial;
+  readonly linen: THREE.MeshStandardMaterial;
+  readonly stone: THREE.MeshStandardMaterial;
+  readonly glow: THREE.MeshStandardMaterial;
+  readonly coal: THREE.MeshStandardMaterial;
+  readonly flame: THREE.MeshStandardMaterial;
+}
+
 export interface ReceptionMaterials {
   readonly stone: THREE.MeshStandardMaterial;
   readonly gold: THREE.MeshStandardMaterial;
@@ -970,6 +1536,7 @@ export interface ReceptionMaterials {
 
 const weddingMaterialCache = new Map<string, WeddingMaterials>();
 const receptionMaterialCache = new Map<string, ReceptionMaterials>();
+const mehendiMaterialCache = new Map<string, MehendiMaterials>();
 
 /** Late-bind the environment map once the renderer has produced one. */
 function bindEnv(
@@ -1052,6 +1619,121 @@ export function getWeddingMaterials(
 
   bindEnv(set.bronze, env, 1.6);
   bindEnv(set.sandstone, env, 0.55);
+  return set;
+}
+
+/**
+ * PBR set for the mehendi courtyard — everything in that world that is *not*
+ * cloth or foliage, both of which are hand-authored shaders in `chapterWorlds`.
+ *
+ * Colours here are physical rather than palette-driven (bark is bark, brass is
+ * brass); the chapter's 2900K key light and saffron lantern glow are what tie
+ * them to the rest of the scene. Only the emissive members read the palette.
+ *
+ * This set rasterises five surface-map pairs on first use — the largest of the
+ * three sets — so the first entry into the chapter pays a one-off cost of a few
+ * tens of milliseconds. It lands inside the 2.6s transition tween, and every
+ * later entry is a cache hit.
+ */
+export function getMehendiMaterials(
+  chapter: ChapterConfig,
+  env: THREE.Texture | null,
+): MehendiMaterials {
+  let set = mehendiMaterialCache.get(chapter.id);
+
+  if (!set) {
+    const barkMaps = setRepeat(getSurfaceMaps("bark"), 2, 1.5);
+    const teakMaps = setRepeat(getSurfaceMaps("teak"), 1.5, 4);
+    const brassMaps = setRepeat(getSurfaceMaps("brass"), 2, 2);
+    const linenMaps = setRepeat(getSurfaceMaps("linen"), 3, 2);
+    const stoneMaps = setRepeat(getSurfaceMaps("courtyardStone"), 5, 3.5);
+
+    set = {
+      // Deep, fissured bark. The bump strength is the whole effect here — the
+      // base colour is almost flat.
+      bark: new THREE.MeshStandardMaterial({
+        color: "#3A2E24",
+        roughness: 0.96,
+        metalness: 0.0,
+        normalMap: barkMaps.normalMap,
+        normalScale: new THREE.Vector2(1.5, 1.5),
+        roughnessMap: barkMaps.roughnessMap,
+        transparent: true,
+      }),
+      teak: new THREE.MeshStandardMaterial({
+        color: "#6B4527",
+        roughness: 0.5,
+        metalness: 0.04,
+        normalMap: teakMaps.normalMap,
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        roughnessMap: teakMaps.roughnessMap,
+        transparent: true,
+      }),
+      brass: new THREE.MeshStandardMaterial({
+        color: "#B08A3E",
+        roughness: 0.31,
+        metalness: 1.0,
+        normalMap: brassMaps.normalMap,
+        normalScale: new THREE.Vector2(0.5, 0.5),
+        roughnessMap: brassMaps.roughnessMap,
+        transparent: true,
+      }),
+      linen: new THREE.MeshStandardMaterial({
+        color: "#EFE3CC",
+        roughness: 0.85,
+        metalness: 0.0,
+        normalMap: linenMaps.normalMap,
+        normalScale: new THREE.Vector2(0.7, 0.7),
+        roughnessMap: linenMaps.roughnessMap,
+        transparent: true,
+      }),
+      stone: new THREE.MeshStandardMaterial({
+        color: "#57514A",
+        roughness: 0.8,
+        metalness: 0.03,
+        normalMap: stoneMaps.normalMap,
+        normalScale: new THREE.Vector2(0.75, 0.75),
+        roughnessMap: stoneMaps.roughnessMap,
+        transparent: true,
+      }),
+      // Lantern bodies. `emissiveIntensity` is driven per-frame to flicker.
+      glow: new THREE.MeshStandardMaterial({
+        color: chapter.palette.emissive,
+        emissive: new THREE.Color(chapter.palette.emissive),
+        emissiveIntensity: 2.4,
+        roughness: 0.8,
+        metalness: 0.0,
+        transparent: true,
+      }),
+      coal: new THREE.MeshStandardMaterial({
+        color: "#2B1F18",
+        emissive: new THREE.Color(chapter.palette.emissive),
+        emissiveIntensity: 1.9,
+        roughness: 0.9,
+        metalness: 0.0,
+        transparent: true,
+      }),
+      flame: withBaseOpacity(
+        new THREE.MeshStandardMaterial({
+          color: chapter.palette.emissive,
+          emissive: new THREE.Color(chapter.palette.emissive),
+          emissiveIntensity: 3.0,
+          roughness: 1.0,
+          metalness: 0.0,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        }),
+        0.85,
+      ),
+    };
+    mehendiMaterialCache.set(chapter.id, set);
+  }
+
+  bindEnv(set.brass, env, 1.7);
+  bindEnv(set.teak, env, 0.45);
+  bindEnv(set.stone, env, 0.5);
+  bindEnv(set.bark, env, 0.22);
+  bindEnv(set.linen, env, 0.35);
   return set;
 }
 
