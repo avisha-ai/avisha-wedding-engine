@@ -132,6 +132,116 @@ export function createLeafUniforms(): LeafUniforms {
   };
 }
 
+/**
+ * The lantern ring, as seen by the ground materials of the proposal glade.
+ *
+ * A `ShaderMaterial` sees no scene lights, and eight point lights would be
+ * eight extra loop iterations in every lit fragment for the whole scene. Since
+ * the lanterns are a *regular ring*, the moss and flora can instead solve for
+ * the nearest one analytically: fold the fragment's azimuth into one sector and
+ * apply the law of cosines. That is one `cos` and a square root, independent of
+ * how many lanterns the ring actually has.
+ */
+export interface GladeRingUniforms {
+  /** Radius of the lantern ring, in world units. */
+  readonly uRingRadius: Uniform<number>;
+  /** How many lanterns are spaced around it. */
+  readonly uRingCount: Uniform<number>;
+  /** Height of the lantern heads above the glade floor. */
+  readonly uRingHeight: Uniform<number>;
+  /** Collective lantern brightness, `0..~1`. Driven per-frame to breathe. */
+  readonly uRingPulse: Uniform<number>;
+  /** Height of the single lantern floating at the centre of the ring. */
+  readonly uCentreHeight: Uniform<number>;
+}
+
+function createGladeRingUniforms(): GladeRingUniforms {
+  return {
+    uRingRadius: { value: 2.4 },
+    uRingCount: { value: 8 },
+    uRingHeight: { value: 2.6 },
+    uRingPulse: { value: 1 },
+    uCentreHeight: { value: 2.1 },
+  };
+}
+
+/** Extra uniforms for {@link CEREMONY_SHADERS.crystalFacet}. */
+export interface CrystalUniforms extends CeremonyUniforms {
+  /** Strength of the RGB split at grazing angles — the iridescent edge. */
+  readonly uDispersion: Uniform<number>;
+  /** Brightness of the core burning inside the crystal. */
+  readonly uCoreGlow: Uniform<number>;
+  readonly uRingPulse: Uniform<number>;
+}
+
+/** Fresh crystal uniform set. */
+export function createCrystalUniforms(): CrystalUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uDispersion: { value: 0.055 },
+    uCoreGlow: { value: 1.5 },
+    uRingPulse: { value: 1 },
+  };
+}
+
+/** Extra uniforms for {@link CEREMONY_SHADERS.lightShaft}. */
+export interface ShaftUniforms extends CeremonyUniforms {
+  /** Overall shaft brightness before the world fade. */
+  readonly uIntensity: Uniform<number>;
+  /** Density of the drifting motes suspended in the beam. */
+  readonly uMotes: Uniform<number>;
+  readonly uRingPulse: Uniform<number>;
+}
+
+/** Fresh light-shaft uniform set. */
+export function createShaftUniforms(): ShaftUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uIntensity: { value: 0.55 },
+    uMotes: { value: 0.5 },
+    uRingPulse: { value: 1 },
+  };
+}
+
+/** Extra uniforms for {@link CEREMONY_SHADERS.mossCarpet}. */
+export interface MossUniforms extends CeremonyUniforms, GladeRingUniforms {
+  /** Size of one moss clump in world units. Smaller = finer carpet. */
+  readonly uClumpScale: Uniform<number>;
+  /** Radius of the glade floor, used to fall the moss off into the dark. */
+  readonly uGladeRadius: Uniform<number>;
+}
+
+/** Fresh moss uniform set. */
+export function createMossUniforms(): MossUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    ...createGladeRingUniforms(),
+    uClumpScale: { value: 11.0 },
+    uGladeRadius: { value: 4.6 },
+  };
+}
+
+/** Extra uniforms for {@link CEREMONY_SHADERS.wildflower}. */
+export interface FlowerUniforms extends CeremonyUniforms, GladeRingUniforms {
+  /** Peak sway displacement at the tip of a stem, in world units. */
+  readonly uSway: Uniform<number>;
+  /** Bloom tint, linear RGB. */
+  readonly uBloom: Uniform<Vec3>;
+  /** How hot the bloom's throat burns. */
+  readonly uBloomGlow: Uniform<number>;
+}
+
+/** Fresh wildflower uniform set. */
+export function createFlowerUniforms(): FlowerUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    ...createGladeRingUniforms(),
+    uSway: { value: 0.035 },
+    uBloom: { value: [0.9, 0.78, 0.95] },
+    uBloomGlow: { value: 1 },
+  };
+}
+
 // -----------------------------------------------------------------------------
 // Shared GLSL chunks
 // -----------------------------------------------------------------------------
@@ -196,6 +306,59 @@ const VALUE_NOISE_3D = /* glsl */ `
       mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
           mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y),
       f.z);
+  }
+`;
+
+/**
+ * Model matrix including the per-instance transform.
+ *
+ * Three.js declares `attribute mat4 instanceMatrix` and defines `USE_INSTANCING`
+ * for a (non-raw) `ShaderMaterial` whenever the object being drawn is an
+ * `InstancedMesh` — so one vertex stage can serve both cases, and the glade's
+ * thousand-odd moss tufts and blooms can sway from a single draw call.
+ */
+const INSTANCED_MODEL_MATRIX = /* glsl */ `
+  mat4 instancedModelMatrix() {
+    #ifdef USE_INSTANCING
+      return modelMatrix * instanceMatrix;
+    #else
+      return modelMatrix;
+    #endif
+  }
+`;
+
+/**
+ * Analytic lighting from the glade's lantern ring — see
+ * {@link GladeRingUniforms} for why this is not eight point lights.
+ *
+ * Returns `x` = falloff at the shading point, `y` = distance to the nearest
+ * lantern (so callers can shape their own gradients from it).
+ */
+const GLADE_RING_LIGHT = /* glsl */ `
+  uniform float uRingRadius;
+  uniform float uRingCount;
+  uniform float uRingHeight;
+  uniform float uRingPulse;
+  uniform float uCentreHeight;
+
+  vec2 ringLight(vec3 worldPos) {
+    // Fold the azimuth into a single sector: every lantern is equivalent, so
+    // only the nearest one needs solving for.
+    float sector = 6.2831853 / max(uRingCount, 1.0);
+    float a = mod(atan(worldPos.z, worldPos.x) + sector * 0.5, sector) - sector * 0.5;
+
+    // Law of cosines in the ground plane, plus the lantern's height.
+    float r = length(worldPos.xz);
+    float planar = r * r + uRingRadius * uRingRadius
+                 - 2.0 * r * uRingRadius * cos(a);
+    float dy = uRingHeight - worldPos.y;
+    float d = sqrt(max(planar + dy * dy, 1e-4));
+
+    // The lantern floating at the centre, which the ring solve cannot see.
+    float c = length(worldPos - vec3(0.0, uCentreHeight, 0.0));
+
+    float fall = 1.0 / (1.0 + d * d * 0.55) + 0.85 / (1.0 + c * c * 0.5);
+    return vec2(uRingPulse * fall, min(d, c));
   }
 `;
 
@@ -561,6 +724,399 @@ const BANYAN_LEAF_FRAGMENT = /* glsl */ `
   }
 `;
 
+// -----------------------------------------------------------------------------
+// Proposal — the twilight glade
+// -----------------------------------------------------------------------------
+
+/**
+ * Vertex stage shared by the glade's crystal lanterns and their light shafts.
+ * Instancing-aware; passes local position through for object-space fields.
+ */
+const GLADE_VERTEX = /* glsl */ `
+  precision highp float;
+
+  varying vec2  vUv;
+  varying vec3  vWorldNormal;
+  varying vec3  vWorldPos;
+  varying vec3  vLocalPos;
+  varying float vSeed;
+
+  ${INSTANCED_MODEL_MATRIX}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    mat4 M = instancedModelMatrix();
+    vec4 world = M * vec4(position, 1.0);
+
+    // A per-instance offset hashed from where the instance stands. Lets one
+    // instanced draw call give every lantern its own caustic and its own
+    // flicker phase, with no extra attribute to feed.
+    vec3 root = vec3(M[3][0], M[3][1], M[3][2]);
+    vSeed = fract(sin(dot(root.xz, vec2(12.9898, 78.233))) * 43758.5453) * 24.0;
+
+    vWorldPos = world.xyz;
+    vWorldNormal = normalize(mat3(M) * normal);
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * Micro-faceted crystal — the glade's structural lanterns.
+ *
+ * The body is treated as a solid of glass with something burning inside it:
+ *
+ *  - **Facets** come from the screen-space derivative of world position, so the
+ *    low-poly hexagonal crystal shades as flat planes however coarse it is,
+ *    with a fine noise field cutting further micro-facets into each face.
+ *  - **Dispersion** — the Fresnel term is evaluated three times at slightly
+ *    different exponents, one per channel. That splits the grazing edge into a
+ *    rainbow, which is most of what separates crystal from grey glass.
+ *  - **Core** — brightness rises where the surface faces the eye (thin path to
+ *    the centre) and falls at the rim, so the glow reads as coming from inside
+ *    the solid rather than painted on its surface.
+ */
+const CRYSTAL_FACET_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uDispersion;
+  uniform float uCoreGlow;
+  uniform float uRingPulse;
+
+  varying vec3  vLocalPos;
+  varying float vSeed;
+
+  ${VALUE_NOISE_3D}
+
+  void main() {
+    // Flat per-triangle normal: crystal, not a sphere.
+    vec3 flatN = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+    flatN *= sign(dot(flatN, vWorldNormal));
+    vec3 N = normalize(mix(vWorldNormal, flatN, 0.92));
+
+    // Micro-facets cut into each face.
+    vec3 P = vLocalPos + vSeed;
+    vec3 chip = vec3(
+      valueNoise(P * 26.0 + 1.7),
+      valueNoise(P * 26.0 + 9.3),
+      valueNoise(P * 26.0 + 17.1)
+    ) - 0.5;
+    N = normalize(N + chip * 0.16);
+
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uLightDir);
+    vec3 H = normalize(L + V);
+
+    float facing = clamp(dot(N, V), 0.0, 1.0);
+
+    // Dispersion: one Fresnel per channel, exponents fanned apart.
+    float base = 1.0 - facing;
+    vec3 fres = vec3(
+      pow(base, 3.0 - uDispersion * 12.0),
+      pow(base, 3.0),
+      pow(base, 3.0 + uDispersion * 12.0)
+    );
+
+    // A slow caustic wandering through the body of the stone.
+    float caustic = valueNoise(P * 7.0 + vec3(0.0, uTime * 0.35, 0.0));
+    caustic = pow(caustic, 2.2);
+
+    float spark = pow(clamp(dot(N, H), 0.0, 1.0), 90.0);
+
+    // The core: bright through the middle, extinguished at the silhouette.
+    // Each lantern breathes on its own phase, taken from the instance seed.
+    float breath = 0.86 + 0.14 * sin(uTime * 1.3 + vSeed);
+    float core = pow(facing, 1.6) * uCoreGlow * uRingPulse * breath;
+
+    vec3 color = uEmissive * core * (0.75 + caustic * 0.85);
+    color += mix(uSecondary, vec3(1.0), 0.4) * fres * 0.85;   // iridescent rim
+    color += uLightColor * spark * 1.6;                        // facet glints
+    color += uSecondary * 0.06;                                // faint body tint
+    color *= mix(0.9, 1.0, uTransition);
+
+    // Glass is never fully opaque, but the burning core is: let the alpha climb
+    // with the core so the lantern reads solid where it is brightest.
+    float alpha = clamp(0.32 + core * 0.5 + fres.g * 0.4, 0.0, 1.0);
+    gl_FragColor = vec4(color, alpha * uOpacity);
+  }
+`;
+
+/**
+ * Light shafts falling from the lanterns — "god rays" as geometry rather than
+ * as a screen-space post pass.
+ *
+ * Each shaft is an open, downward-widening cone drawn additively. The trick is
+ * the alpha: for a real volume, a pixel's brightness is proportional to the
+ * path length the eye traces through it, which for a cone is greatest through
+ * the middle and falls to nothing at the silhouette. `abs(dot(N, V))` is
+ * exactly that profile, so the cone's own geometry never shows an edge.
+ *
+ * A post-processed pass would be more physically complete, but it would apply
+ * to every chapter, cost a full-screen pass per frame, and fight the existing
+ * bloom. This stays inside the world that wants it and costs one transparent
+ * cone per lantern.
+ */
+const LIGHT_SHAFT_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uIntensity;
+  uniform float uMotes;
+  uniform float uRingPulse;
+
+  varying vec3  vLocalPos;
+  varying float vSeed;
+
+  ${VALUE_NOISE_3D}
+
+  void main() {
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+
+    // Path length through the cone — and the reason no silhouette shows.
+    float depth = pow(abs(dot(N, V)), 0.85);
+
+    // uv.y runs 0 at the base of the cone to 1 at the apex, where the lantern
+    // is. The beam is brightest at the source and dissolves before it lands.
+    float fall = pow(clamp(vUv.y, 0.0, 1.0), 1.7);
+    float foot = smoothstep(0.0, 0.22, vUv.y);   // soften where it meets moss
+
+    // Motes drifting upward through the beam.
+    float motes = valueNoise(vLocalPos * 9.0 + vSeed + vec3(0.0, -uTime * 0.28, 0.0));
+    motes = pow(clamp(motes, 0.0, 1.0), 4.0) * uMotes;
+
+    float body = depth * fall * foot;
+    vec3 color = uEmissive * (body * uIntensity + motes * body * 1.6);
+    color *= uRingPulse;
+    color *= mix(0.85, 1.0, uTransition);
+
+    // Additive blending: alpha scales the contribution, so the world fade rides
+    // it directly and the shaft vanishes with its chapter.
+    gl_FragColor = vec4(color, body * uOpacity);
+  }
+`;
+
+/**
+ * Vertex stage for the moss carpet. The ground is displaced geometry already;
+ * this only forwards it, but it is instancing-aware so the same program can
+ * shade the scattered tufts sitting on top of the plate.
+ */
+const MOSS_VERTEX = /* glsl */ `
+  precision highp float;
+
+  varying vec2 vUv;
+  varying vec3 vWorldNormal;
+  varying vec3 vWorldPos;
+  varying vec3 vLocalPos;
+
+  ${INSTANCED_MODEL_MATRIX}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    mat4 M = instancedModelMatrix();
+    vec4 world = M * vec4(position, 1.0);
+
+    vWorldPos = world.xyz;
+    vWorldNormal = normalize(mat3(M) * normal);
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * A dense moss carpet.
+ *
+ * Moss is not a surface, it is thousands of tiny upright fronds, and the thing
+ * that sells it is that light arrives at all of them from slightly different
+ * angles. So the shading normal is scattered at two scales — clump and frond —
+ * exactly as the banyan canopy scatters at bough and leaf scale.
+ *
+ * It is lit by three sources: the chapter key (cool, from above), the lantern
+ * ring solved analytically, and a wrapped translucency term, because damp moss
+ * passes a surprising amount of light.
+ */
+const MOSS_CARPET_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uClumpScale;
+  uniform float uGladeRadius;
+
+  varying vec3 vLocalPos;
+
+  ${VALUE_NOISE_3D}
+  ${GLADE_RING_LIGHT}
+
+  vec3 noiseGrad(vec3 p, float centre, float eps) {
+    return vec3(
+      valueNoise(p + vec3(eps, 0.0, 0.0)) - centre,
+      valueNoise(p + vec3(0.0, eps, 0.0)) - centre,
+      valueNoise(p + vec3(0.0, 0.0, eps)) - centre
+    ) / eps;
+  }
+
+  void main() {
+    vec3 P = vWorldPos * uClumpScale;
+
+    float clump = valueNoise(P);
+    vec3  g     = noiseGrad(P, clump, 0.45);
+
+    // Frond scale, analytic so its gradient is two cosines rather than taps.
+    float fa = vWorldPos.x * 42.0 + vWorldPos.z * 33.0;
+    float fb = vWorldPos.z * 45.0 - vWorldPos.x * 29.0;
+    float frond = 0.5 + 0.5 * sin(fa) * sin(fb);
+    vec3  gf = vec3(
+      42.0 * cos(fa) * sin(fb) - 29.0 * sin(fa) * cos(fb),
+      0.0,
+      33.0 * cos(fa) * sin(fb) + 45.0 * sin(fa) * cos(fb)
+    );
+
+    // Frond detail is far finer than a pixel once the ground recedes, and a
+    // per-pixel field sampled below its Nyquist rate crawls. Fading it out with
+    // distance is the cheapest possible LOD and costs one exponential.
+    float detail = exp(-length(cameraPosition - vWorldPos) * 0.11);
+    frond = mix(0.5, frond, detail);
+
+    vec3 N = normalize(vWorldNormal - g * 0.30 - gf * (0.0026 * detail));
+
+    vec3 L = normalize(uLightDir);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+
+    // Cool key from above, wrapped hard — moss has no clean terminator.
+    float key = clamp((dot(N, L) + 0.6) / 1.6, 0.0, 1.0);
+
+    // Warm pools under each lantern.
+    vec2  ring = ringLight(vWorldPos);
+    float lantern = ring.x;
+
+    // Damp moss passes light; the deepest clumps stay dark and hold the shadow.
+    float depth = mix(0.35, 1.0, clump * 0.6 + frond * 0.4);
+    float sheen = pow(clamp(dot(N, normalize(L + V)), 0.0, 1.0), 18.0) * 0.5;
+
+    vec3 deep = uPrimary * 0.12;
+    // Only a trace of the pale accent — any more and damp moss turns to sage.
+    vec3 lit  = mix(uPrimary, uSecondary, 0.02 + frond * 0.08);
+
+    vec3 color = mix(deep, lit, key) * depth * uLightColor;
+    color += uEmissive * lantern * depth * 1.15;             // lantern pools
+    color += mix(uPrimary, uEmissive, 0.5) * lantern * clump * 0.4;
+    color += uLightColor * sheen * depth * 0.16;             // damp highlight
+
+    // The floor is a finite plate, and a hard oval against the twilight would
+    // give that away. Falling it off into near-black lets the fog finish the
+    // job — cheaper and safer than fading alpha, which would cost depth writes.
+    float rim = 1.0 - smoothstep(0.42, 0.99, length(vWorldPos.xz) / uGladeRadius);
+    color *= mix(0.015, 1.0, rim);
+
+    color *= mix(0.92, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
+/**
+ * Vertex stage for the wildflowers.
+ *
+ * Blooms are instanced, and each stem bends about its own base. `uv.y` runs 0
+ * at the root to 1 at the bloom, so the sway envelope needs no extra attribute
+ * — the same trick the silk drapes use, inverted.
+ */
+const WILDFLOWER_VERTEX = /* glsl */ `
+  precision highp float;
+
+  uniform float uTime;
+  uniform float uSway;
+
+  varying vec2  vUv;
+  varying vec3  vWorldNormal;
+  varying vec3  vWorldPos;
+  varying vec3  vLocalPos;
+  varying float vStem;
+
+  ${INSTANCED_MODEL_MATRIX}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    // Rooted at the base, free at the bloom.
+    float up = clamp(uv.y, 0.0, 1.0);
+    vStem = up;
+
+    mat4 M = instancedModelMatrix();
+    vec4 world = M * vec4(position, 1.0);
+
+    // The instance's own origin, so every stem gets its own phase from where it
+    // stands — no per-instance attribute needed.
+    vec3 root = vec3(M[3][0], M[3][1], M[3][2]);
+
+    float amp = up * up * uSway;
+    float p1 = uTime * 1.15 + root.x * 2.2 + root.z * 1.7;
+    float p2 = uTime * 0.61 + root.x * 1.1 - root.z * 2.6;
+
+    world.x += sin(p1) * amp;
+    world.z += sin(p2) * amp * 0.75;
+
+    vWorldPos = world.xyz;
+    vWorldNormal = normalize(mat3(M) * normal);
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * Procedural fairytale wildflowers.
+ *
+ * The bloom is shaded as a translucent petal: it takes the key light through
+ * its back as readily as its front, and its throat carries an emissive that
+ * brightens with the lantern ring — so the flowers light up as the glade does
+ * rather than sitting inert under it.
+ */
+const WILDFLOWER_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform vec3  uBloom;
+  uniform float uBloomGlow;
+
+  varying vec3  vLocalPos;
+  varying float vStem;
+
+  ${GLADE_RING_LIGHT}
+
+  void main() {
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uLightDir);
+
+    // Both species are authored to the same UV split: stem below 0.72, bloom
+    // above it. See FLOWER_BLOOM_V in proceduralAssets.
+    float bloom = smoothstep(0.70, 0.80, vStem);
+
+    float key = clamp((dot(N, L) + 0.55) / 1.55, 0.0, 1.0);
+    // Petals are thin: light comes through the far side almost as well.
+    float through = pow(clamp(dot(V, -normalize(L + N * 0.4)), 0.0, 1.0), 2.4);
+
+    vec2  ring = ringLight(vWorldPos);
+    float lantern = ring.x;
+
+    // Throat glow, hottest at the very tip of the bloom.
+    float throat = smoothstep(0.86, 1.0, vStem);
+
+    vec3 stemColor = mix(uPrimary * 0.5, uPrimary, key);
+    vec3 petal = mix(uBloom * 0.3, uBloom, key);
+    petal += uBloom * through * 0.8;
+
+    vec3 color = mix(stemColor, petal, bloom) * uLightColor;
+    color += uEmissive * lantern * (0.25 + bloom * 0.8);
+    color += uEmissive * throat * uBloomGlow * (0.25 + lantern * 0.9);
+    color *= mix(0.92, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
 /**
  * Hook: henna-vine growth. Placeholder pulses a mask so vines "draw" over time.
  * Replace with the real SDF vine field.
@@ -605,6 +1161,10 @@ export type CeremonyShaderName =
   | "goldLeaf"
   | "rawSilk"
   | "banyanLeaf"
+  | "crystalFacet"
+  | "lightShaft"
+  | "mossCarpet"
+  | "wildflower"
   | "hennaVine"
   | "ember";
 
@@ -629,6 +1189,22 @@ export const CEREMONY_SHADERS: Readonly<
   banyanLeaf: {
     vertexShader: BANYAN_LEAF_VERTEX,
     fragmentShader: BANYAN_LEAF_FRAGMENT,
+  },
+  crystalFacet: {
+    vertexShader: GLADE_VERTEX,
+    fragmentShader: CRYSTAL_FACET_FRAGMENT,
+  },
+  lightShaft: {
+    vertexShader: GLADE_VERTEX,
+    fragmentShader: LIGHT_SHAFT_FRAGMENT,
+  },
+  mossCarpet: {
+    vertexShader: MOSS_VERTEX,
+    fragmentShader: MOSS_CARPET_FRAGMENT,
+  },
+  wildflower: {
+    vertexShader: WILDFLOWER_VERTEX,
+    fragmentShader: WILDFLOWER_FRAGMENT,
   },
   hennaVine: {
     vertexShader: CEREMONY_VERTEX_SHADER,

@@ -70,6 +70,8 @@ export const PALETTE = {
   champagneGold: "#C8A24B",
   duskRose: "#8A2E4D",
   // Architectural material tones for the per-chapter worlds.
+  gladeMoss: "#2F5D46",
+  twilightViolet: "#221C46",
   glassTint: "#CFE3E8",
   sandstone: "#C69B6D",
   bronze: "#7A5A2E",
@@ -152,16 +154,21 @@ export interface ChapterConfig {
 // -----------------------------------------------------------------------------
 
 export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
-  // 1 — Proposal: a minimalist glasshouse under clean daylight.
+  // 1 — Proposal: an enchanted twilight glade ringed with crystal lanterns.
+  //
+  // The key is a cool, low moonlight rim (6200K) deliberately starved of
+  // intensity: almost everything the eye reads in this chapter is the warm
+  // lantern glow, and the contrast between the two is the whole look. Fog is
+  // heavy enough for the lantern shafts to have something to hang in.
   proposal: {
     id: "proposal",
     title: "Proposal",
-    subtitle: "A question asked inside a glasshouse of light.",
+    subtitle: "A question asked in a glade of fairy lanterns.",
     palette: {
-      primary: PALETTE.glassTint,
-      secondary: PALETTE.templeIvory,
+      primary: PALETTE.gladeMoss,
+      secondary: PALETTE.glassTint,
       emissive: PALETTE.champagneGold,
-      background: PALETTE.templeIvory,
+      background: PALETTE.twilightViolet,
     },
     camera: {
       position: [4.5, 2.6, 8.5],
@@ -169,12 +176,12 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
       fov: 44,
     },
     lighting: {
-      temperatureK: 5000,
-      keyIntensity: 1.5,
-      keyDirection: [5, 9, 5],
-      ambientIntensity: 0.7,
-      hemiIntensity: 0.8,
-      fogDensity: 0.006,
+      temperatureK: 6200,
+      keyIntensity: 0.55,
+      keyDirection: [-3, 7, -6],
+      ambientIntensity: 0.22,
+      hemiIntensity: 0.3,
+      fogDensity: 0.045,
     },
     transitionDuration: 2.0,
   },

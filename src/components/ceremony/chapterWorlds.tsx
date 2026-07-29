@@ -22,9 +22,14 @@ import { kelvinToRGB, type ChapterConfig, type ChapterId } from "./ceremonyConfi
 import {
   CEREMONY_SHADERS,
   createCeremonyUniforms,
+  createCrystalUniforms,
+  createFlowerUniforms,
   createLeafUniforms,
+  createMossUniforms,
+  createShaftUniforms,
   createSilkUniforms,
   type CeremonyUniforms,
+  type GladeRingUniforms,
   type LeafUniforms,
   type SilkUniforms,
 } from "./shaders";
@@ -34,6 +39,7 @@ import {
   banyanCanopyShellGeometry,
   banyanPropRootGeometry,
   banyanTrunkGeometry,
+  bellflowerGeometry,
   bolsterGeometry,
   brazierGeometry,
   buildMatrices,
@@ -50,31 +56,48 @@ import {
   drapePanelGeometry,
   drapeValanceGeometry,
   emberGeometry,
+  fairyLanternGeometry,
   flameGeometry,
+  gladeArchGeometry,
+  gladeFloorGeometry,
+  gladeGroundHeight,
+  gladePostGeometry,
   getEnvMap,
+  getProposalMaterials,
   getMehendiMaterials,
   getReceptionMaterials,
   getWeddingMaterials,
   glassPaneGeometry,
   havanKundGeometry,
   kundRimBandGeometry,
+  lanternCoreGeometry,
   lanternGeometry,
   lanternGlowGeometry,
+  lightShaftGeometry,
+  mossTuftGeometry,
   mullionGeometry,
   pillarCollarGeometry,
   pillarShaftGeometry,
   plateGeometry,
   plinthGeometry,
+  scatterOnGround,
+  starflowerGeometry,
+  toadstoolGeometry,
   tableApronGeometry,
   tableLegGeometry,
   tableTopGeometry,
   BANYAN_CANOPY_HALF_HEIGHT,
   BANYAN_CANOPY_RADIUS,
   BANYAN_SHELL_COUNT,
+  GLADE_POST_HEIGHT,
+  GLADE_RADIUS,
+  GLADE_RING_COUNT,
+  GLADE_RING_RADIUS,
   DAYBED_HALF_X,
   DAYBED_HALF_Z,
   DAYBED_RAIL_Y,
   DRAPE_HEIGHT,
+  type KeepOut,
   type Placement,
 } from "./proceduralAssets";
 
@@ -243,77 +266,422 @@ interface WorldProps {
 }
 
 // -----------------------------------------------------------------------------
-// 1 — Proposal: minimalist glasshouse frame
+// 1 — Proposal: an enchanted twilight glade ringed with crystal lanterns
 // -----------------------------------------------------------------------------
 
-function GlasshouseWorld({ chapter }: WorldProps): JSX.Element {
-  const { primary, secondary } = chapter.palette;
-  const w = 1.6;
-  const h = 1.3;
-  const d = 1.4;
-  const mullion = secondary; // slender frame colour
-  const bar = 0.05;
+/** Lantern head height above the ground plane — the post top plus the crystal. */
+const GLADE_LANTERN_Y = GLADE_POST_HEIGHT + 0.28;
+/** Height the single lantern at the centre of the ring floats at. */
+const GLADE_CENTRE_Y = 2.1;
+/** Radius of the classic toadstool ring, set inside the lanterns. */
+const TOADSTOOL_RING_RADIUS = 1.55;
 
-  // Twelve edges of the box as thin beams.
-  const edges: Array<{ pos: [number, number, number]; size: [number, number, number] }> = [
-    // verticals
-    { pos: [-w, 0, -d], size: [bar, h * 2, bar] },
-    { pos: [w, 0, -d], size: [bar, h * 2, bar] },
-    { pos: [-w, 0, d], size: [bar, h * 2, bar] },
-    { pos: [w, 0, d], size: [bar, h * 2, bar] },
-    // top rails
-    { pos: [0, h, -d], size: [w * 2, bar, bar] },
-    { pos: [0, h, d], size: [w * 2, bar, bar] },
-    { pos: [-w, h, 0], size: [bar, bar, d * 2] },
-    { pos: [w, h, 0], size: [bar, bar, d * 2] },
-    // bottom rails
-    { pos: [0, -h, -d], size: [w * 2, bar, bar] },
-    { pos: [0, -h, d], size: [w * 2, bar, bar] },
-    { pos: [-w, -h, 0], size: [bar, bar, d * 2] },
-    { pos: [w, -h, 0], size: [bar, bar, d * 2] },
-  ];
+const GLADE_SECTOR = (Math.PI * 2) / GLADE_RING_COUNT;
+
+/** Where each post stands. Uniform by design — see `gladeArchGeometry`. */
+const GLADE_RING_SLOTS = Array.from({ length: GLADE_RING_COUNT }, (_, i) => {
+  const angle = i * GLADE_SECTOR;
+  return {
+    angle,
+    x: Math.cos(angle) * GLADE_RING_RADIUS,
+    z: Math.sin(angle) * GLADE_RING_RADIUS,
+  };
+});
+
+const GLADE_POSTS: readonly Placement[] = GLADE_RING_SLOTS.map(({ x, z, angle }) => ({
+  position: [x, 0, z] as const,
+  // Turning each post hides the fact that they share one roughened buffer.
+  rotation: [0, angle * 2.7, 0] as const,
+}));
+
+const GLADE_ARCHES: readonly Placement[] = GLADE_RING_SLOTS.map(({ angle }) => ({
+  position: [0, 0, 0] as const,
+  rotation: [0, angle, 0] as const,
+}));
+
+/** Crystals vary in size and turn, so a single instanced draw call still reads
+ *  as eight individually grown stones. */
+const GLADE_CRYSTALS: readonly Placement[] = GLADE_RING_SLOTS.map(
+  ({ x, z, angle }, i) => ({
+    position: [x, GLADE_POST_HEIGHT - 0.06, z] as const,
+    rotation: [0, angle * 3.1 + i, 0] as const,
+    scale: 0.86 + ((i * 5) % 4) * 0.11,
+  }),
+);
+
+const GLADE_CORES: readonly Placement[] = GLADE_RING_SLOTS.map(({ x, z }) => ({
+  position: [x, GLADE_LANTERN_Y - 0.06, z] as const,
+}));
+
+/**
+ * One light shaft per lantern. The shared cone is a unit tall, so scaling Y by
+ * the drop and centring it puts the apex at the crystal and the mouth just
+ * under the moss.
+ */
+const GLADE_SHAFT_TOP = GLADE_LANTERN_Y - 0.1;
+const GLADE_SHAFT_BOTTOM = -0.15;
+const GLADE_SHAFT_HEIGHT = GLADE_SHAFT_TOP - GLADE_SHAFT_BOTTOM;
+
+const GLADE_SHAFTS: readonly Placement[] = GLADE_RING_SLOTS.map(({ x, z }) => ({
+  position: [x, (GLADE_SHAFT_TOP + GLADE_SHAFT_BOTTOM) / 2, z] as const,
+  scale: [1, GLADE_SHAFT_HEIGHT, 1] as const,
+}));
+
+/** Footings the flora has to keep clear of. */
+const GLADE_KEEP_OUT: readonly KeepOut[] = GLADE_RING_SLOTS.map(({ x, z }) => ({
+  x,
+  z,
+  radius: 0.2,
+}));
+
+const MOSS_TUFTS: readonly Placement[] = scatterOnGround({
+  count: 620,
+  innerRadius: 0.15,
+  outerRadius: GLADE_RADIUS - 0.75,
+  seed: 401,
+  minScale: 0.7,
+  maxScale: 1.9,
+  height: gladeGroundHeight,
+  keepOut: GLADE_KEEP_OUT,
+  bury: 0.015,
+});
+
+const GLADE_BELLFLOWERS: readonly Placement[] = scatterOnGround({
+  count: 180,
+  innerRadius: 0.4,
+  outerRadius: GLADE_RADIUS - 1.1,
+  seed: 419,
+  minScale: 0.34,
+  maxScale: 0.62,
+  height: gladeGroundHeight,
+  keepOut: GLADE_KEEP_OUT,
+  bury: 0.02,
+});
+
+const GLADE_STARFLOWERS: readonly Placement[] = scatterOnGround({
+  count: 240,
+  innerRadius: 0.3,
+  outerRadius: GLADE_RADIUS - 1.0,
+  seed: 433,
+  minScale: 0.36,
+  maxScale: 0.7,
+  height: gladeGroundHeight,
+  keepOut: GLADE_KEEP_OUT,
+  bury: 0.02,
+});
+
+/**
+ * Toadstools: a true ring of them — the folk sign of a fairy circle — plus a
+ * looser scatter so the ring reads as found rather than planted.
+ */
+const GLADE_TOADSTOOLS: readonly Placement[] = [
+  ...Array.from({ length: 22 }, (_, i) => {
+    const angle = (i / 22) * Math.PI * 2 + 0.17;
+    // Wobble the radius so the circle is organic, not surveyed.
+    const r = TOADSTOOL_RING_RADIUS + Math.sin(i * 2.7) * 0.16;
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
+    return {
+      position: [x, gladeGroundHeight(x, z) - 0.01, z] as const,
+      rotation: [0, i * 1.9, 0] as const,
+      scale: 0.5 + ((i * 3) % 5) * 0.09,
+    };
+  }),
+  ...scatterOnGround({
+    count: 14,
+    innerRadius: 2.95,
+    outerRadius: GLADE_RADIUS - 1.1,
+    seed: 457,
+    minScale: 0.6,
+    maxScale: 1.25,
+    height: gladeGroundHeight,
+    keepOut: GLADE_KEEP_OUT,
+    bury: 0.01,
+  }),
+];
+
+/**
+ * The glade's hand-authored shader materials.
+ *
+ * Every one of these is instancing-aware, which is what keeps a carpet of a
+ * thousand-odd plants and eight volumetric shafts inside a dozen draw calls.
+ */
+interface GladeShaders {
+  readonly moss: THREE.ShaderMaterial;
+  readonly bellflower: THREE.ShaderMaterial;
+  readonly starflower: THREE.ShaderMaterial;
+  readonly crystal: THREE.ShaderMaterial;
+  readonly shaft: THREE.ShaderMaterial;
+  /** Sets taking the per-frame time tick. */
+  readonly timed: readonly CeremonyUniforms[];
+  /** Sets taking the lantern-ring breath. */
+  readonly pulsed: readonly { uRingPulse: { value: number } }[];
+}
+
+function buildGladeShaders(chapter: ChapterConfig): GladeShaders {
+  const program = (
+    name: "mossCarpet" | "wildflower" | "crystalFacet" | "lightShaft",
+    uniforms: CeremonyUniforms,
+    extra?: Partial<THREE.ShaderMaterialParameters>,
+  ): THREE.ShaderMaterial => {
+    applyChapterUniforms(uniforms, chapter);
+
+    // The shared uniform block carries the key light's *colour* but not its
+    // strength. This chapter's key is deliberately starved (0.55) so the
+    // lanterns can carry the scene, and a shader that ignored that would light
+    // the glade like noon. Folded into the colour here rather than into
+    // `applyChapterUniforms`, so the already-tuned worlds are untouched.
+    const gain = chapter.lighting.keyIntensity;
+    const [lr, lg, lb] = uniforms.uLightColor.value;
+    uniforms.uLightColor.value = [lr * gain, lg * gain, lb * gain];
+
+    const source = CEREMONY_SHADERS[name];
+    return new THREE.ShaderMaterial({
+      vertexShader: source.vertexShader,
+      fragmentShader: source.fragmentShader,
+      uniforms: asUniformMap(uniforms),
+      transparent: true,
+      ...extra,
+    });
+  };
+
+  const bindRing = <T extends GladeRingUniforms>(u: T): T => {
+    u.uRingRadius.value = GLADE_RING_RADIUS;
+    u.uRingCount.value = GLADE_RING_COUNT;
+    u.uRingHeight.value = GLADE_LANTERN_Y;
+    u.uCentreHeight.value = GLADE_CENTRE_Y;
+    return u;
+  };
+
+  const mossUniforms = bindRing(createMossUniforms());
+  mossUniforms.uGladeRadius.value = GLADE_RADIUS;
+  const bellUniforms = bindRing(createFlowerUniforms());
+  const starUniforms = bindRing(createFlowerUniforms());
+  const crystalUniforms = createCrystalUniforms();
+  const shaftUniforms = createShaftUniforms();
+  shaftUniforms.uIntensity.value = 0.72;
+  shaftUniforms.uMotes.value = 0.62;
+
+  // Two species, two tints. Pale lilac bells and a warmer cream star.
+  bellUniforms.uBloom.value = [0.82, 0.68, 0.95];
+  bellUniforms.uSway.value = 0.04;
+  starUniforms.uBloom.value = [0.97, 0.9, 0.76];
+  starUniforms.uSway.value = 0.022;
+  starUniforms.uBloomGlow.value = 1.35;
+
+  const moss = program("mossCarpet", mossUniforms);
+  const bellflower = program("wildflower", bellUniforms, {
+    side: THREE.DoubleSide,
+  });
+  const starflower = program("wildflower", starUniforms, {
+    side: THREE.DoubleSide,
+  });
+
+  // Glass: never allowed to write depth, so the shafts and cores behind it
+  // still come through. A base opacity under the fade helper's 0.98 threshold
+  // is what pins that off permanently.
+  const crystal = program("crystalFacet", crystalUniforms, {
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  crystal.userData.baseOpacity = 0.95;
+
+  // Shafts are pure light: added to whatever is already in the buffer, never
+  // occluding it.
+  const shaft = program("lightShaft", shaftUniforms, {
+    side: THREE.FrontSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  shaft.userData.baseOpacity = 0.9;
+
+  return {
+    moss,
+    bellflower,
+    starflower,
+    crystal,
+    shaft,
+    timed: [
+      mossUniforms,
+      bellUniforms,
+      starUniforms,
+      crystalUniforms,
+      shaftUniforms,
+    ],
+    pulsed: [mossUniforms, bellUniforms, starUniforms, crystalUniforms, shaftUniforms],
+  };
+}
+
+const gladeShaderCache = new Map<ChapterId, GladeShaders>();
+
+/** Cached per chapter and never disposed — see {@link getMehendiShaders}. */
+function getGladeShaders(chapter: ChapterConfig): GladeShaders {
+  let set = gladeShaderCache.get(chapter.id);
+  if (!set) {
+    set = buildGladeShaders(chapter);
+    gladeShaderCache.set(chapter.id, set);
+  }
+  return set;
+}
+
+function ProposalWorld({ chapter }: WorldProps): JSX.Element {
+  const renderer = useThree((state) => state.gl);
+  const env = useMemo(() => getEnvMap(renderer, "daylight"), [renderer]);
+  const materials = useMemo(() => getProposalMaterials(chapter, env), [chapter, env]);
+  const shaders = useMemo(() => getGladeShaders(chapter), [chapter]);
+
+  const centreRef = useRef<THREE.Group>(null);
+  const ringLightRef = useRef<THREE.PointLight>(null);
+  const clock = useRef(0);
+
+  useFrame((_state, delta) => {
+    clock.current += delta;
+    const t = clock.current;
+
+    const live = getGladeShaders(chapter);
+    const surfaces = getProposalMaterials(chapter, env);
+
+    // The ring breathes slowly and together; individual lanterns take their own
+    // phase from their instance seed inside the crystal shader.
+    const pulse = 0.86 + Math.sin(t * 0.9) * 0.1 + Math.sin(t * 1.7 + 1.1) * 0.05;
+
+    for (const uniforms of live.timed) uniforms.uTime.value = t;
+    for (const uniforms of live.pulsed) uniforms.uRingPulse.value = pulse;
+
+    // The fade helper writes uOpacity every frame, so this is a free read of
+    // the world's presence — and the point light has to be scaled by it by
+    // hand, since the helper only walks materials.
+    const presence = live.timed[0].uOpacity.value;
+
+    if (ringLightRef.current) {
+      ringLightRef.current.intensity = 7.5 * pulse * presence;
+    }
+    surfaces.core.emissiveIntensity = 3.2 + pulse * 1.6;
+    surfaces.toadstool.emissiveIntensity = 0.3 + pulse * 0.35;
+
+    // The centre lantern drifts, so the glade never feels quite still.
+    const centre = centreRef.current;
+    if (centre) {
+      centre.position.y = GLADE_CENTRE_Y + Math.sin(t * 0.62) * 0.07;
+      centre.rotation.y = t * 0.18;
+    }
+  });
 
   return (
-    <group position={[0, 1.4, 0]}>
-      {/* Glass skin */}
-      <mesh>
-        <boxGeometry args={[w * 2, h * 2, d * 2]} />
-        <meshStandardMaterial
-          color={primary}
-          transparent
-          opacity={0.14}
-          roughness={0.05}
-          metalness={0.1}
-          side={THREE.DoubleSide}
+    <group>
+      {/* Moss floor — the shadow catcher, and the surface every plant below
+          solves its height from. */}
+      <Part
+        geometry={gladeFloorGeometry()}
+        material={shaders.moss}
+        castShadow={false}
+      />
+      <InstancedPart
+        geometry={mossTuftGeometry()}
+        material={shaders.moss}
+        placements={MOSS_TUFTS}
+        castShadow={false}
+      />
+
+      {/* Wildflowers. Both species share one program and one vertex stage; only
+          their tint and sway differ. */}
+      <InstancedPart
+        geometry={bellflowerGeometry()}
+        material={shaders.bellflower}
+        placements={GLADE_BELLFLOWERS}
+        castShadow={false}
+      />
+      <InstancedPart
+        geometry={starflowerGeometry()}
+        material={shaders.starflower}
+        placements={GLADE_STARFLOWERS}
+        castShadow={false}
+      />
+      <InstancedPart
+        geometry={toadstoolGeometry()}
+        material={materials.toadstool}
+        placements={GLADE_TOADSTOOLS}
+        castShadow={false}
+      />
+
+      {/* The ring: posts, and the woven crown of boughs arcing between them. */}
+      <InstancedPart
+        geometry={gladePostGeometry()}
+        material={materials.bough}
+        placements={GLADE_POSTS}
+      />
+      <InstancedPart
+        geometry={gladeArchGeometry()}
+        material={materials.bough}
+        placements={GLADE_ARCHES}
+      />
+
+      {/* Crystal lanterns and the cores burning inside them. Glass is kept out
+          of the shadow pass — the depth pass cannot see the shader's alpha, so
+          a crystal that cast would drop an opaque block of shade. */}
+      <InstancedPart
+        geometry={fairyLanternGeometry()}
+        material={shaders.crystal}
+        placements={GLADE_CRYSTALS}
+        castShadow={false}
+        receiveShadow={false}
+      />
+      <InstancedPart
+        geometry={lanternCoreGeometry()}
+        material={materials.core}
+        placements={GLADE_CORES}
+        castShadow={false}
+      />
+
+      {/* God rays. Additive cones, drawn last so they lay over the glade. */}
+      <InstancedPart
+        geometry={lightShaftGeometry()}
+        material={shaders.shaft}
+        placements={GLADE_SHAFTS}
+        castShadow={false}
+        receiveShadow={false}
+      />
+
+      {/* The lantern that floats untethered at the centre of the ring. */}
+      <group ref={centreRef} position={[0, GLADE_CENTRE_Y, 0]}>
+        <Part
+          geometry={fairyLanternGeometry()}
+          material={shaders.crystal}
+          position={[0, -0.28, 0]}
+          scale={[1.5, 1.5, 1.5]}
+          castShadow={false}
+          receiveShadow={false}
         />
-      </mesh>
-      {/* Pitched glass roof */}
-      <mesh position={[0, h + 0.45, 0]} rotation={[0, Math.PI / 4, 0]}>
-        <coneGeometry args={[w * 1.5, 0.9, 4]} />
-        <meshStandardMaterial
-          color={primary}
-          transparent
-          opacity={0.16}
-          roughness={0.05}
+        <Part
+          geometry={lanternCoreGeometry()}
+          material={materials.core}
+          position={[0, 0.02, 0]}
+          scale={[1.4, 1.4, 1.4]}
+          castShadow={false}
         />
-      </mesh>
-      {/* Frame */}
-      {edges.map((e, i) => (
-        <mesh key={i} position={e.pos}>
-          <boxGeometry args={e.size} />
-          <meshStandardMaterial
-            color={mullion}
-            transparent
-            metalness={0.7}
-            roughness={0.35}
-          />
-        </mesh>
-      ))}
-      {/* The proposal ring — a floating gold torus */}
-      <mesh position={[0, 0, 0]} rotation={[Math.PI / 2.4, 0, 0]}>
-        <torusGeometry args={[0.42, 0.07, 20, 48]} />
-        <GoldMaterial chapter={chapter} />
-      </mesh>
+
+        {/* One real light for the whole glade. The crystals and shafts are
+            emissive geometry, and the moss and flora solve the ring
+            analytically, so this only has to serve the posts and toadstools. */}
+        <pointLight
+          ref={ringLightRef}
+          color={chapter.palette.emissive}
+          intensity={7.5}
+          distance={14}
+          decay={2}
+        />
+      </group>
+
+      {/* The centre lantern's own shaft, anchored to the ground rather than to
+          the bobbing group so the beam stays planted. */}
+      <Part
+        geometry={lightShaftGeometry()}
+        material={shaders.shaft}
+        position={[0, (GLADE_CENTRE_Y - 0.35 + GLADE_SHAFT_BOTTOM) / 2, 0]}
+        scale={[1.35, GLADE_CENTRE_Y - 0.35 - GLADE_SHAFT_BOTTOM, 1.35]}
+        castShadow={false}
+        receiveShadow={false}
+      />
     </group>
   );
 }
@@ -1345,7 +1713,7 @@ function LibraryHearthWorld({ chapter }: WorldProps): JSX.Element {
 // -----------------------------------------------------------------------------
 
 const WORLD_BY_ID: Record<ChapterId, (props: WorldProps) => JSX.Element> = {
-  proposal: GlasshouseWorld,
+  proposal: ProposalWorld,
   engagement: StepwellWorld,
   mehendi: MehendiWorld,
   sangeet: AmphitheaterWorld,

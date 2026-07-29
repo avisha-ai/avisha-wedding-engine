@@ -835,6 +835,69 @@ function pleatedPanel(
   return geometry;
 }
 
+/**
+ * A tube swept along a curve with a per-station radius.
+ *
+ * `THREE.TubeGeometry` is fixed-radius, and a branch that does not taper reads
+ * as pipework. The frames come from the curve's own Frenet solve, so the
+ * cross-sections stay square to the path around a bend.
+ */
+function taperedTube(
+  curve: THREE.Curve<THREE.Vector3>,
+  segments: number,
+  sides: number,
+  radiusAt: (t: number) => number,
+): THREE.BufferGeometry {
+  const frames = curve.computeFrenetFrames(segments, false);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const point = curve.getPointAt(t);
+    const n = frames.normals[i];
+    const b = frames.binormals[i];
+    const radius = radiusAt(t);
+
+    for (let j = 0; j <= sides; j++) {
+      const angle = (j / sides) * Math.PI * 2;
+      const sin = Math.sin(angle);
+      const cos = -Math.cos(angle);
+
+      const nx = cos * n.x + sin * b.x;
+      const ny = cos * n.y + sin * b.y;
+      const nz = cos * n.z + sin * b.z;
+      const len = Math.hypot(nx, ny, nz) || 1;
+
+      normals.push(nx / len, ny / len, nz / len);
+      positions.push(
+        point.x + nx * radius,
+        point.y + ny * radius,
+        point.z + nz * radius,
+      );
+      uvs.push(j / sides, t);
+    }
+  }
+
+  for (let i = 0; i < segments; i++) {
+    for (let j = 0; j < sides; j++) {
+      const a = i * (sides + 1) + j;
+      const b = a + sides + 1;
+      indices.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 // -----------------------------------------------------------------------------
 // Shared geometry
 // -----------------------------------------------------------------------------
@@ -1487,6 +1550,407 @@ export function brazierGeometry(): THREE.BufferGeometry {
   );
 }
 
+// -----------------------------------------------------------------------------
+// Proposal — the twilight glade
+// -----------------------------------------------------------------------------
+
+/** Radius of the mossy glade floor. */
+export const GLADE_RADIUS = 4.6;
+/** Radius of the lantern ring, and how many lanterns stand on it. */
+export const GLADE_RING_RADIUS = 2.4;
+export const GLADE_RING_COUNT = 8;
+/** Height of a lantern post above the nominal ground plane. */
+export const GLADE_POST_HEIGHT = 2.55;
+
+/**
+ * Height of the glade floor at a point.
+ *
+ * Exported because the flora has to *sit* on the moss: the ground plate and
+ * every scattered tuft, bloom and toadstool solve their Y from this one
+ * function, so nothing floats or sinks when the field is retuned.
+ *
+ * The dish term lifts the floor toward the treeline, which frames the ring and
+ * hides the plate's edge in the fog.
+ */
+export function gladeGroundHeight(x: number, z: number): number {
+  const r = Math.hypot(x, z);
+  const dish = 0.1 * Math.pow(Math.min(r / GLADE_RADIUS, 1), 2.2);
+  const hummock = (fbm(x * 0.55 + 8, z * 0.55 + 8, 8, 8, 3, 211) - 0.5) * 0.22;
+  return dish + hummock;
+}
+
+/** The mossy glade floor: a disc of concentric rings pushed into hummocks. */
+export function gladeFloorGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("gladeFloor", () => {
+    // Concentric rings rather than a fan of triangles from the centre, so the
+    // displacement has vertices to work with all the way across.
+    const geometry = new THREE.RingGeometry(0.0001, GLADE_RADIUS, 72, 16);
+    geometry.rotateX(-Math.PI / 2);
+
+    const pos = geometry.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setY(i, gladeGroundHeight(pos.getX(i), pos.getZ(i)));
+    }
+    pos.needsUpdate = true;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingSphere();
+    return geometry;
+  });
+}
+
+/**
+ * A lantern post. Runs from below the ground plane so the base stays buried
+ * whatever the hummocks are doing underneath it.
+ */
+export function gladePostGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("gladePost", () =>
+    roughenRadial(
+      lathe(
+        [
+          [0.0, -0.15],
+          [0.095, -0.15],
+          [0.075, 0.0],
+          [0.055, 0.14],
+          [0.046, 0.6],
+          [0.042, 1.05],
+          [0.047, 1.32],
+          [0.038, 1.72],
+          [0.034, 2.16],
+          [0.041, 2.36],
+          [0.028, 2.5],
+          [0.0, GLADE_POST_HEIGHT],
+        ],
+        9,
+      ),
+      0.18,
+      5,
+      307,
+    ),
+  );
+}
+
+/**
+ * One bough of the woven crown, arcing from a post to its neighbour.
+ *
+ * Authored across a single sector so the ring can be built by instancing this
+ * one buffer at `i * sector` — which is also why the posts are a uniform height
+ * rather than following the hummocks beneath them.
+ */
+export function gladeArchGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("gladeArch", () => {
+    const sector = (Math.PI * 2) / GLADE_RING_COUNT;
+    const r = GLADE_RING_RADIUS;
+    const y = GLADE_POST_HEIGHT - 0.12;
+
+    const curve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(r, y, 0),
+      // Pulled inward and lifted, so the crown leans over the glade.
+      new THREE.Vector3(
+        Math.cos(sector / 2) * r * 0.86,
+        GLADE_POST_HEIGHT + 0.8,
+        Math.sin(sector / 2) * r * 0.86,
+      ),
+      new THREE.Vector3(Math.cos(sector) * r, y, Math.sin(sector) * r),
+    );
+
+    // Boughs thin as they arch — thickest where they leave the posts.
+    return taperedTube(curve, 18, 5, (t) => 0.036 - Math.sin(t * Math.PI) * 0.013);
+  });
+}
+
+/**
+ * A lantern crystal: a six-sided quartz point. Deliberately coarse — the facet
+ * shading comes from the shader's derivative pass, not from tessellation.
+ */
+export function fairyLanternGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("fairyLantern", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.055, 0.075],
+        [0.085, 0.16],
+        [0.09, 0.3],
+        [0.07, 0.42],
+        [0.03, 0.5],
+        [0.0, 0.545],
+      ],
+      6,
+    ),
+  );
+}
+
+/** The burning core suspended inside a lantern crystal. */
+export function lanternCoreGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("lanternCore", () => new THREE.SphereGeometry(0.05, 8, 6));
+}
+
+/**
+ * The volume a lantern's light hangs in: an open cone, widening downward.
+ *
+ * `CylinderGeometry` puts `uv.y = 1` at the top ring, which is where the
+ * lantern sits — the shaft shader reads its falloff straight off that.
+ */
+export function lightShaftGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("lightShaft", () =>
+    new THREE.CylinderGeometry(0.1, 0.8, 1.0, 14, 6, true),
+  );
+}
+
+/** A clump of moss blades, merged. Instanced across the whole glade floor. */
+export function mossTuftGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("mossTuft", () => {
+    const blade = new THREE.ConeGeometry(0.014, 0.06, 4, 1);
+    const parts: GeometryPart[] = [];
+    // Hand-placed rather than random: six blades is few enough that an even
+    // spread reads better than a draw from a generator.
+    for (const [x, z, lift] of [
+      [0.0, 0.0, 1.15],
+      [0.03, 0.018, 0.85],
+      [-0.028, 0.022, 0.95],
+      [0.012, -0.032, 1.05],
+      [-0.02, -0.026, 0.8],
+      [0.038, -0.008, 0.7],
+    ] as const) {
+      const part = blade.clone();
+      part.scale(1, lift, 1);
+      parts.push({ geometry: part, matrix: at(x, 0.03 * lift, z) });
+    }
+    const merged = mergeParts(parts);
+    for (const part of parts) part.geometry.dispose();
+    blade.dispose();
+    return merged;
+  });
+}
+
+/**
+ * The UV split every wildflower is authored to: stem below, bloom above.
+ *
+ * Both species publish the same contract so one fragment shader can mask petal
+ * from stem without knowing which flower it is drawing.
+ */
+export const FLOWER_BLOOM_V = 0.72;
+
+/**
+ * Rewrite a lathed flower's V so the bloom starts exactly at
+ * {@link FLOWER_BLOOM_V}.
+ *
+ * `LatheGeometry` distributes V by *point index*, not arc length, so where the
+ * bloom lands in UV space is an accident of how many points the stem happens to
+ * use. Remapping about the known split makes it deliberate.
+ */
+function remapBloomV(geometry: THREE.BufferGeometry, split: number): THREE.BufferGeometry {
+  const uv = geometry.attributes.uv as THREE.BufferAttribute;
+  for (let i = 0; i < uv.count; i++) {
+    const v = uv.getY(i);
+    uv.setY(
+      i,
+      v < split
+        ? (v / split) * FLOWER_BLOOM_V
+        : FLOWER_BLOOM_V + ((v - split) / (1 - split)) * (1 - FLOWER_BLOOM_V),
+    );
+  }
+  uv.needsUpdate = true;
+  return geometry;
+}
+
+/**
+ * A bell-shaped wildflower: a narrow stem opening into a flared, rolled lip.
+ * Lathed in one piece, then re-split so the flare owns the top of the UV range.
+ */
+export function bellflowerGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("bellflower", () =>
+    remapBloomV(
+      lathe(
+        [
+          [0.0, 0.0],
+          [0.008, 0.005],
+          [0.008, 0.09],
+          [0.007, 0.17],
+          [0.007, 0.24],
+          [0.006, 0.29],
+          [0.007, 0.33],
+          [0.014, 0.355],
+          [0.028, 0.378],
+          [0.046, 0.404],
+          [0.062, 0.428],
+          [0.068, 0.45],
+          [0.056, 0.462],
+          [0.026, 0.452],
+        ],
+        7,
+      ),
+      // The flare begins at the eighth of fourteen points.
+      8 / 13,
+    ),
+  );
+}
+
+/**
+ * A five-petalled star bloom.
+ *
+ * Built from real petals rather than lathed, because a surface of revolution on
+ * a stem is a *mushroom* silhouette however it is profiled — which is exactly
+ * what the first pass of this glade looked like. Each petal is a flat diamond
+ * splayed outward and tipped up, with its UVs written by hand so the bloom mask
+ * and the throat glow land where the shader expects them.
+ */
+export function starflowerGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("starflower", () => {
+    const petals = 5;
+    const stemTop = 0.17;
+
+    const stem = remapBloomV(
+      lathe(
+        [
+          [0.0, 0.0],
+          [0.005, 0.004],
+          [0.005, 0.06],
+          [0.0045, 0.12],
+          [0.006, stemTop],
+        ],
+        5,
+      ),
+      1,
+    );
+
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+
+    for (let p = 0; p < petals; p++) {
+      const angle = (p / petals) * Math.PI * 2;
+      const ca = Math.cos(angle);
+      const sa = Math.sin(angle);
+
+      // `along` runs out from the stem, `across` is the petal's width.
+      const vertex = (along: number, across: number, y: number, v: number): void => {
+        positions.push(ca * along - sa * across, y, sa * along + ca * across);
+        uvs.push(0.5, v);
+      };
+
+      const base = positions.length / 3;
+      vertex(0.008, 0, stemTop, FLOWER_BLOOM_V + 0.02);
+      vertex(0.038, -0.019, stemTop + 0.011, 0.88);
+      vertex(0.038, 0.019, stemTop + 0.011, 0.88);
+      vertex(0.07, 0, stemTop + 0.018, 1.0);
+
+      indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+    }
+
+    const bloom = new THREE.BufferGeometry();
+    bloom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    bloom.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    bloom.setIndex(indices);
+    bloom.computeVertexNormals();
+
+    const merged = mergeParts([{ geometry: stem }, { geometry: bloom }]);
+    stem.dispose();
+    bloom.dispose();
+    return merged;
+  });
+}
+
+/** A toadstool, for the ring of them the glade is named after. */
+export function toadstoolGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("toadstool", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.022, 0.0],
+        [0.018, 0.03],
+        [0.016, 0.08],
+        [0.018, 0.115],
+        [0.062, 0.125],
+        [0.07, 0.145],
+        [0.058, 0.175],
+        [0.032, 0.192],
+        [0.0, 0.198],
+      ],
+      10,
+    ),
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Deterministic scatter
+// -----------------------------------------------------------------------------
+
+/** A circular region flora must stay out of — a post footing, say. */
+export interface KeepOut {
+  readonly x: number;
+  readonly z: number;
+  readonly radius: number;
+}
+
+export interface ScatterOptions {
+  readonly count: number;
+  readonly innerRadius: number;
+  readonly outerRadius: number;
+  readonly seed: number;
+  readonly minScale: number;
+  readonly maxScale: number;
+  /** Ground height at a point — normally {@link gladeGroundHeight}. */
+  readonly height: (x: number, z: number) => number;
+  readonly keepOut?: readonly KeepOut[];
+  /** Sink each instance by this much, so stems start below the surface. */
+  readonly bury?: number;
+}
+
+/**
+ * Scatter instances across an annulus of ground.
+ *
+ * Seeded from the same integer hash as the surface maps, so a given seed always
+ * produces the same meadow — the scatter is authored content, not something
+ * that should reshuffle between reloads.
+ *
+ * Radii are drawn through a square root so the result is uniform by *area*; a
+ * linear draw crowds everything into the middle.
+ */
+export function scatterOnGround(options: ScatterOptions): Placement[] {
+  const {
+    count,
+    innerRadius,
+    outerRadius,
+    seed,
+    minScale,
+    maxScale,
+    height,
+    keepOut = [],
+    bury = 0,
+  } = options;
+
+  const placements: Placement[] = [];
+  const inner2 = innerRadius * innerRadius;
+  const outer2 = outerRadius * outerRadius;
+
+  // Draws are cheap and rejections are rare, so oversample rather than risk
+  // returning fewer instances than asked for.
+  for (let i = 0; placements.length < count && i < count * 4; i++) {
+    const r = Math.sqrt(inner2 + (outer2 - inner2) * hash2(i, 1, seed));
+    const angle = hash2(i, 2, seed) * Math.PI * 2;
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
+
+    let blocked = false;
+    for (const zone of keepOut) {
+      if (Math.hypot(x - zone.x, z - zone.z) < zone.radius) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+
+    const scale = minScale + (maxScale - minScale) * hash2(i, 3, seed);
+    placements.push({
+      position: [x, height(x, z) - bury, z],
+      rotation: [0, hash2(i, 4, seed) * Math.PI * 2, 0],
+      scale,
+    });
+  }
+
+  return placements;
+}
+
 // =============================================================================
 // Materials
 // =============================================================================
@@ -1514,6 +1978,12 @@ export interface WeddingMaterials {
   readonly flame: THREE.MeshStandardMaterial;
 }
 
+export interface ProposalMaterials {
+  readonly bough: THREE.MeshStandardMaterial;
+  readonly toadstool: THREE.MeshStandardMaterial;
+  readonly core: THREE.MeshStandardMaterial;
+}
+
 export interface MehendiMaterials {
   readonly bark: THREE.MeshStandardMaterial;
   readonly teak: THREE.MeshStandardMaterial;
@@ -1537,6 +2007,7 @@ export interface ReceptionMaterials {
 const weddingMaterialCache = new Map<string, WeddingMaterials>();
 const receptionMaterialCache = new Map<string, ReceptionMaterials>();
 const mehendiMaterialCache = new Map<string, MehendiMaterials>();
+const proposalMaterialCache = new Map<string, ProposalMaterials>();
 
 /** Late-bind the environment map once the renderer has produced one. */
 function bindEnv(
@@ -1619,6 +2090,58 @@ export function getWeddingMaterials(
 
   bindEnv(set.bronze, env, 1.6);
   bindEnv(set.sandstone, env, 0.55);
+  return set;
+}
+
+/**
+ * PBR set for the twilight glade — the handful of surfaces that are *not*
+ * hand-authored shaders (moss, flora, crystal and shafts all are).
+ *
+ * Deliberately map-free. Every other world pays a one-off cost to rasterise
+ * surface maps on first entry; here the posts and toadstools are small, dark
+ * and backlit, the post geometry already carries its own irregularity from
+ * `roughenRadial`, and a normal map would not survive the twilight key. Skipping
+ * them means this chapter — the one the app opens on — has no texture-build
+ * hitch at all.
+ */
+export function getProposalMaterials(
+  chapter: ChapterConfig,
+  env: THREE.Texture | null,
+): ProposalMaterials {
+  let set = proposalMaterialCache.get(chapter.id);
+
+  if (!set) {
+    set = {
+      // Pale birch, so the posts read as a bright silhouette against the dark.
+      bough: new THREE.MeshStandardMaterial({
+        color: "#C4BBA8",
+        roughness: 0.82,
+        metalness: 0.0,
+        transparent: true,
+      }),
+      toadstool: new THREE.MeshStandardMaterial({
+        color: "#C9A48C",
+        emissive: new THREE.Color(chapter.palette.emissive),
+        emissiveIntensity: 0.5,
+        roughness: 0.7,
+        metalness: 0.0,
+        transparent: true,
+      }),
+      // Driven per-frame so the cores breathe with the ring.
+      core: new THREE.MeshStandardMaterial({
+        color: chapter.palette.emissive,
+        emissive: new THREE.Color(chapter.palette.emissive),
+        emissiveIntensity: 4.0,
+        roughness: 1.0,
+        metalness: 0.0,
+        transparent: true,
+      }),
+    };
+    proposalMaterialCache.set(chapter.id, set);
+  }
+
+  bindEnv(set.bough, env, 0.35);
+  bindEnv(set.toadstool, env, 0.3);
   return set;
 }
 
