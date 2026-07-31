@@ -231,6 +231,87 @@ export interface FlowerUniforms extends CeremonyUniforms, GladeRingUniforms {
   readonly uBloomGlow: Uniform<number>;
 }
 
+/**
+ * The sangeet's overhead rig, as seen by the stage surfaces.
+ *
+ * Same trick as the glade's lantern ring and for the same reason — a
+ * `ShaderMaterial` sees no scene lights, and a dozen moving spots would be a
+ * dozen loop iterations in every lit fragment. The rig is a regular ring, so
+ * the stone solves for the nearest lamp analytically and the whole rig costs
+ * one `cos` and a square root regardless of how many lamps hang on it.
+ */
+export interface StageRigUniforms {
+  readonly uRigRadius: Uniform<number>;
+  readonly uRigCount: Uniform<number>;
+  readonly uRigHeight: Uniform<number>;
+  /** Rotation of the whole rig, in radians. Swept per-frame. */
+  readonly uRigSpin: Uniform<number>;
+  /** Master brightness of the rig, `0..~1`. */
+  readonly uRigPulse: Uniform<number>;
+  /** Height the fixtures are aimed at — the stage floor. */
+  readonly uRigAimY: Uniform<number>;
+}
+
+/** Extra uniforms for {@link CEREMONY_SHADERS.stagePolish}. */
+export interface StageUniforms extends CeremonyUniforms, StageRigUniforms {
+  /** 0 = honed faceted tier, 1 = mirror-polished stage floor. */
+  readonly uPolish: Uniform<number>;
+  /** Facet size in world units. Larger = coarser cleave. */
+  readonly uFacetScale: Uniform<number>;
+}
+
+/** Fresh stage uniform set. */
+export function createStageUniforms(): StageUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uRigRadius: { value: 3.2 },
+    uRigCount: { value: 10 },
+    uRigHeight: { value: 4.4 },
+    uRigSpin: { value: 0 },
+    uRigPulse: { value: 1 },
+    uRigAimY: { value: 0.3 },
+    uPolish: { value: 0 },
+    uFacetScale: { value: 3.4 },
+  };
+}
+
+/** Extra uniforms for {@link CEREMONY_SHADERS.sacredFire}. */
+export interface FireUniforms extends CeremonyUniforms {
+  /** Peak lateral whip at the tip of a flame, in world units. */
+  readonly uTurbulence: Uniform<number>;
+  /** Overall opacity of the flame sheath. */
+  readonly uCore: Uniform<number>;
+  /** How fast fuel is advected up the column. */
+  readonly uRise: Uniform<number>;
+}
+
+/** Fresh sacred-fire uniform set. */
+export function createFireUniforms(): FireUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uTurbulence: { value: 0.035 },
+    uCore: { value: 1.0 },
+    uRise: { value: 2.6 },
+  };
+}
+
+/** Extra uniforms for {@link CEREMONY_SHADERS.smokePlume}. */
+export interface SmokeUniforms extends CeremonyUniforms {
+  /** Overall smoke density. */
+  readonly uDensity: Uniform<number>;
+  /** How fast the column drifts upward. */
+  readonly uRise: Uniform<number>;
+}
+
+/** Fresh smoke uniform set. */
+export function createSmokeUniforms(): SmokeUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uDensity: { value: 0.85 },
+    uRise: { value: 0.42 },
+  };
+}
+
 /** Extra uniforms for {@link CEREMONY_SHADERS.veinedMarble}. */
 export interface MarbleUniforms extends CeremonyUniforms {
   /** Vein lattice frequency. Higher = tighter, busier veining. */
@@ -1456,6 +1537,274 @@ const MIRROR_WATER_FRAGMENT = /* glsl */ `
   }
 `;
 
+// -----------------------------------------------------------------------------
+// Sangeet — the amphitheatre
+// -----------------------------------------------------------------------------
+
+/**
+ * Analytic lighting from the overhead rig. Returns `x` = falloff, `y` = the
+ * signed sector angle, so callers can colour by which lamp is nearest.
+ */
+const STAGE_RIG_LIGHT = /* glsl */ `
+  uniform float uRigRadius;
+  uniform float uRigCount;
+  uniform float uRigHeight;
+  uniform float uRigSpin;
+  uniform float uRigPulse;
+  uniform float uRigAimY;
+
+  vec3 rigLight(vec3 worldPos) {
+    float sector = 6.2831853 / max(uRigCount, 1.0);
+    float raw = atan(worldPos.z, worldPos.x) - uRigSpin;
+
+    // Which lamp is nearest in azimuth, and where it actually hangs.
+    float index = floor((raw + sector * 0.5) / sector);
+    float lampAngle = index * sector + uRigSpin;
+    vec3 lamp = vec3(
+      cos(lampAngle) * uRigRadius,
+      uRigHeight,
+      sin(lampAngle) * uRigRadius
+    );
+
+    // A focused lamp falls off around its *beam axis*, not around the azimuth
+    // it happens to sit at. Folding on the angle instead carves the stage into
+    // hard pie slices, which is what a sector falloff actually draws.
+    vec3 axis = normalize(vec3(0.0, uRigAimY, 0.0) - lamp);
+    vec3 toFrag = worldPos - lamp;
+    float along = dot(toFrag, axis);
+    float perp = length(toFrag - axis * along);
+
+    float d = max(length(toFrag), 1e-4);
+    float focus = exp(-perp * perp * 1.9) * step(0.0, along);
+
+    return vec3(uRigPulse * focus / (1.0 + d * d * 0.16), index, d);
+  }
+`;
+
+/**
+ * The amphitheatre's stone — one program for both the faceted tiers and the
+ * polished stage, split by `uPolish`.
+ *
+ * The rock is dark and near-black in the diffuse, because everything the eye
+ * reads here is specular: the cleave planes catch the rig and throw it back as
+ * hard coloured glints. Facet normals come from quantising the shading normal
+ * onto a noise-jittered lattice, which gives a crystalline break-up that no
+ * amount of tessellation would.
+ *
+ * At `uPolish` 1 the facets flatten out and the specular lobe tightens into a
+ * wet, mirror-like floor that streaks the lamps across itself.
+ */
+const STAGE_POLISH_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uPolish;
+  uniform float uFacetScale;
+
+  varying vec3 vLocalPos;
+
+  ${VALUE_NOISE_3D}
+  ${STAGE_RIG_LIGHT}
+
+  void main() {
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+
+    // Cleave the surface into facets: jitter the normal on a quantised lattice
+    // so neighbouring cells share a plane and the boundaries read as edges.
+    vec3 cell = floor(vWorldPos * uFacetScale);
+    vec3 jitter = vec3(
+      valueNoise(cell + 0.5),
+      valueNoise(cell + 11.5),
+      valueNoise(cell + 23.5)
+    ) - 0.5;
+    vec3 facetN = normalize(N + jitter * 0.55);
+    N = normalize(mix(facetN, N, uPolish));
+
+    vec3 rig = rigLight(vWorldPos);
+    float lamp = rig.x;
+
+    // Gels alternate around the rig. Selecting on the discrete lamp index
+    // switches colour abruptly at every sector boundary, which draws hard
+    // spokes across a polished floor; a wave at half the lamp frequency
+    // alternates the same way without the seam.
+    float raw = atan(vWorldPos.z, vWorldPos.x) - uRigSpin;
+    float tintWave = 0.5 + 0.5 * cos(raw * uRigCount * 0.5);
+    vec3 lampTint = mix(uSecondary, uEmissive, tintWave);
+
+    vec3 L = normalize(uLightDir);
+    vec3 H = normalize(L + V);
+
+    float key = clamp(dot(N, L), 0.0, 1.0) * 0.5 + 0.5;
+    float sharp = mix(30.0, 260.0, uPolish);
+    float glint = pow(clamp(dot(N, H), 0.0, 1.0), sharp);
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.5);
+
+    // Beam direction for the lamp specular, so the rig streaks across a
+    // polished floor rather than just brightening it.
+    vec3 toRig = normalize(vec3(0.0, uRigHeight, 0.0) - vWorldPos);
+    float beamSpec = pow(clamp(dot(N, normalize(toRig + V)), 0.0, 1.0), sharp * 0.8);
+
+    vec3 rock = uPrimary * mix(0.16, 0.07, uPolish);
+
+    vec3 color = rock * key * uLightColor;
+    color += lampTint * lamp * mix(0.75, 1.15, uPolish);
+    color += lampTint * beamSpec * lamp * mix(0.5, 2.6, uPolish);
+    color += uLightColor * glint * mix(0.25, 0.8, uPolish);
+    color += mix(uSecondary, uEmissive, 0.5) * fres * 0.28;
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
+// -----------------------------------------------------------------------------
+// Wedding — the sacred fire
+// -----------------------------------------------------------------------------
+
+/**
+ * Vertex stage for the sacred fire.
+ *
+ * The flame body is a lathed teardrop authored with `uv.y` 0 at the base and 1
+ * at the tip, so the whip envelope reads straight off the UVs: anchored where
+ * it sits in the coals, free where it tapers out.
+ */
+const SACRED_FIRE_VERTEX = /* glsl */ `
+  precision highp float;
+
+  uniform float uTime;
+  uniform float uTurbulence;
+
+  varying vec2 vUv;
+  varying vec3 vWorldNormal;
+  varying vec3 vWorldPos;
+  varying vec3 vLocalPos;
+
+  ${INSTANCED_MODEL_MATRIX}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    mat4 M = instancedModelMatrix();
+    vec4 world = M * vec4(position, 1.0);
+
+    float up = clamp(uv.y, 0.0, 1.0);
+    float amp = up * up * uTurbulence;
+
+    world.x += sin(uTime * 3.1 + world.z * 6.0 + up * 5.0) * amp;
+    world.z += sin(uTime * 2.7 + world.x * 5.4 + up * 4.2) * amp * 0.8;
+    world.y += sin(uTime * 4.3 + up * 7.0) * amp * 0.35;
+
+    vWorldPos = world.xyz;
+    vWorldNormal = normalize(mat3(M) * normal);
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * The sacred fire.
+ *
+ * Fire has no surface, so nothing here shades one. A noise column is advected
+ * *downward* through the flame's own local space, which is what reads as gas
+ * rising through it; the field then drives a density, and the density drives a
+ * temperature.
+ *
+ * The temperature ramp is the part that matters. A flame is not one colour —
+ * white-hot where the fuel is richest, through saffron, to a deep red where it
+ * is starving at the tip — and an emissive material with a single colour can
+ * never be more than a glowing cone. Drawn additively, so the three bodies sum
+ * where they overlap the way real flames do.
+ */
+const SACRED_FIRE_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uCore;
+  uniform float uRise;
+
+  varying vec3 vLocalPos;
+
+  ${VALUE_NOISE_3D}
+
+  void main() {
+    float up = clamp(vUv.y, 0.0, 1.0);
+
+    // Fuel, scrolling down through the body as the body burns up.
+    vec3 P = vLocalPos * vec3(9.0, 4.5, 9.0);
+    P.y -= uTime * uRise;
+    float fuel = valueNoise(P) * 0.65 + valueNoise(P * 2.3 + 4.1) * 0.35;
+
+    // Rich at the base, starved at the tip, eaten into by the fuel field.
+    float density = clamp((1.0 - up) * 1.25 * mix(0.45, 1.3, fuel), 0.0, 1.0);
+
+    float heat = clamp(density * 1.35 - up * 0.35, 0.0, 1.0);
+    vec3 dying = mix(uPrimary, uEmissive, 0.35) * 0.55;
+    vec3 core  = mix(uEmissive, vec3(1.0, 0.95, 0.82), 0.75);
+
+    vec3 color = mix(dying, uEmissive, smoothstep(0.12, 0.5, heat));
+    color = mix(color, core, smoothstep(0.62, 0.95, heat));
+
+    // Double-sided and additive, so the shell sums twice through the middle of
+    // the column and once at its edge — the volume falls out of the geometry.
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    float facing = mix(0.55, 1.0, abs(dot(normalize(vWorldNormal), V)));
+
+    float alpha = density * facing * uCore;
+    alpha *= smoothstep(0.0, 0.08, up);    // bed into the coals
+    alpha *= smoothstep(1.0, 0.72, up);    // dissolve at the tip
+
+    color *= mix(0.9, 1.0, uTransition);
+    gl_FragColor = vec4(color * (0.85 + heat * 1.5), clamp(alpha, 0.0, 1.0) * uOpacity);
+  }
+`;
+
+/**
+ * Smoke lifting off the fire.
+ *
+ * Alpha-blended rather than additive: smoke *occludes*. It is lit from below by
+ * the fire it came from and loses that warmth as it climbs and thins, which is
+ * the whole reason to draw it — it carries the fire's light up into the air
+ * above the kund.
+ */
+const SMOKE_PLUME_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uDensity;
+  uniform float uRise;
+
+  varying vec3 vLocalPos;
+
+  ${VALUE_NOISE_3D}
+
+  void main() {
+    float up = clamp(vUv.y, 0.0, 1.0);
+
+    // The plume is barely a unit across, so the field has to be sampled an
+    // order of magnitude finer than the geometry — sampled coarsely it resolves
+    // into a handful of balls, which the bloom pass then turns into headlights.
+    vec3 P = vLocalPos * vec3(22.0, 9.0, 22.0);
+    P.y -= uTime * uRise;
+    float puff = valueNoise(P) * 0.55 + valueNoise(P * 2.7 + 9.0) * 0.45;
+
+    // Gathers just above the flame, then thins as it spreads and cools.
+    float body = smoothstep(0.0, 0.24, up) * (1.0 - smoothstep(0.3, 1.0, up));
+    float density = body * smoothstep(0.35, 0.85, puff) * uDensity;
+
+    // A shell has no business showing its own silhouette: drive the edge to
+    // nothing rather than to half.
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    float facing = pow(abs(dot(normalize(vWorldNormal), V)), 1.6);
+
+    // Warm where the fire still reaches it, cold above — and dim throughout.
+    // Smoke that crosses the bloom threshold stops being smoke.
+    vec3 lit = mix(uEmissive * 0.4, vec3(0.15, 0.14, 0.16), smoothstep(0.05, 0.45, up));
+    vec3 color = lit * mix(0.6, 1.0, puff);
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, clamp(density * facing, 0.0, 1.0) * uOpacity);
+  }
+`;
+
 /**
  * Hook: henna-vine growth. Placeholder pulses a mask so vines "draw" over time.
  * Replace with the real SDF vine field.
@@ -1479,15 +1828,34 @@ const HENNA_VINE_FRAGMENT = /* glsl */ `
 const EMBER_FRAGMENT = /* glsl */ `
   ${SHARED_PREAMBLE}
 
-  float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-  }
+  varying vec3 vLocalPos;
+
+  ${VALUE_NOISE_3D}
 
   void main() {
-    float flicker = hash(floor(vUv * 20.0) + floor(uTime * 12.0));
-    vec3 color = mix(uPrimary, uEmissive, flicker);
-    color *= mix(0.6, 1.4, flicker) * uTransition;
-    gl_FragColor = vec4(color * uLightColor, 1.0);
+    // Crust and cracks. The heat lives in the gaps between the plates, not on
+    // their faces — which is what separates a coal from a glowing pebble.
+    vec3 P = vWorldPos * 26.0;
+    float plate = valueNoise(P) * 0.7 + valueNoise(P * 3.1 + 7.0) * 0.3;
+    float crack = pow(1.0 - abs(plate - 0.5) * 2.0, 6.0);
+
+    // Every coal breathes on its own phase, taken from where it lies.
+    float phase = valueNoise(floor(vWorldPos * 40.0)) * 6.2831853;
+    float breath = 0.55 + 0.45 * sin(uTime * 2.1 + phase);
+
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    float facing = clamp(dot(N, V), 0.0, 1.0);
+
+    float glow = crack * breath;
+
+    vec3 color = vec3(0.16, 0.14, 0.13) * mix(0.6, 1.2, plate) * uLightColor;
+    color += mix(uPrimary, uEmissive, 0.6) * glow * 1.8;
+    color += mix(uEmissive, vec3(1.0, 0.9, 0.7), 0.4) * pow(glow, 2.5) * 1.6;
+    color += uEmissive * (1.0 - facing) * 0.15 * breath;   // heat haze at the rim
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
   }
 `;
 
@@ -1504,6 +1872,9 @@ export type CeremonyShaderName =
   | "lightShaft"
   | "mossCarpet"
   | "wildflower"
+  | "stagePolish"
+  | "sacredFire"
+  | "smokePlume"
   | "veinedMarble"
   | "marbleReflection"
   | "mirrorWater"
@@ -1546,6 +1917,18 @@ export const CEREMONY_SHADERS: Readonly<
   },
   // Marble and the pool share the glade's instancing-aware vertex stage; only
   // the reflection needs its own, to bend with the water.
+  stagePolish: {
+    vertexShader: GLADE_VERTEX,
+    fragmentShader: STAGE_POLISH_FRAGMENT,
+  },
+  sacredFire: {
+    vertexShader: SACRED_FIRE_VERTEX,
+    fragmentShader: SACRED_FIRE_FRAGMENT,
+  },
+  smokePlume: {
+    vertexShader: SACRED_FIRE_VERTEX,
+    fragmentShader: SMOKE_PLUME_FRAGMENT,
+  },
   veinedMarble: {
     vertexShader: GLADE_VERTEX,
     fragmentShader: VEINED_MARBLE_FRAGMENT,
@@ -1567,7 +1950,7 @@ export const CEREMONY_SHADERS: Readonly<
     fragmentShader: HENNA_VINE_FRAGMENT,
   },
   ember: {
-    vertexShader: CEREMONY_VERTEX_SHADER,
+    vertexShader: GLADE_VERTEX,
     fragmentShader: EMBER_FRAGMENT,
   },
 } as const;

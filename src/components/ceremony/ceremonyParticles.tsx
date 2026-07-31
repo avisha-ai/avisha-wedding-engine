@@ -238,15 +238,17 @@ function SmokeWisps({ fadeRef }: ParticleProps): JSX.Element {
     202,
     (rng) => [range(rng, -0.35, 0.35), range(rng, 0, 0.3), range(rng, -0.35, 0.35)],
     (rng) => {
-      const v = 0.92 + rng() * 0.07;
-      return [v, v * 0.98, v * 0.95]; // near-white, faintly warm
+      // Grey, not white. At 0.92 these sat well over the bloom pass's 0.55
+      // luminance threshold, so every wisp came back as a blown-out ball.
+      const v = 0.34 + rng() * 0.1;
+      return [v, v * 0.97, v * 0.95];
     },
   );
 
   const uniforms = useMemo(
     () => ({
       uTime: { value: 0 },
-      uSize: { value: 300 },
+      uSize: { value: 130 },
       uOpacity: { value: 1 },
     }),
     [],

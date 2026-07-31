@@ -926,8 +926,197 @@ export function flameGeometry(): THREE.BufferGeometry {
 }
 
 // -----------------------------------------------------------------------------
+// Sangeet — the amphitheatre
+// -----------------------------------------------------------------------------
+
+/** Overhead rig: how many lamps, the radius they hang on, and how high. */
+export const STAGE_RIG_COUNT = 10;
+export const STAGE_RIG_RADIUS = 3.2;
+export const STAGE_RIG_HEIGHT = 4.3;
+/** Top of the stage platform. */
+export const STAGE_FLOOR_Y = 0.3;
+
+/** Faceted octagonal stage block. Eight lathe segments, stepped at the rim. */
+export function stagePlatformGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("stagePlatform", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [2.72, 0.0],
+        [2.72, 0.11],
+        [2.6, 0.14],
+        [2.6, 0.24],
+        [2.5, 0.27],
+        [2.5, STAGE_FLOOR_Y],
+        [0.0, STAGE_FLOOR_Y],
+      ],
+      8,
+    ),
+  );
+}
+
+/** The polished disc laid over the stage — the surface that mirrors the rig. */
+export function stageFloorGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("stageFloor", () => {
+    const geometry = new THREE.CircleGeometry(2.46, 48);
+    geometry.rotateX(-Math.PI / 2);
+    return geometry;
+  });
+}
+
+/**
+ * One seating tier, authored at unit radius so the four rings are the same
+ * buffer instanced at different scales.
+ */
+export function stageTierGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("stageTier", () =>
+    lathe(
+      [
+        [1.0, 0.0],
+        [1.0, 0.34],
+        [0.93, 0.38],
+        [0.93, 0.06],
+        [0.86, 0.02],
+        [0.86, 0.0],
+      ],
+      8,
+    ),
+  );
+}
+
+/** The overhead truss the lamps hang from. */
+export function stageTrussGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("stageTruss", () => {
+    const geometry = new THREE.TorusGeometry(STAGE_RIG_RADIUS, 0.055, 6, 48);
+    geometry.rotateX(Math.PI / 2);
+    return geometry;
+  });
+}
+
+/**
+ * Transform that puts a rig fixture at the first lamp station, aimed at the
+ * stage.
+ *
+ * Baked into the geometry so the whole rig is one instanced draw call rotated
+ * about Y — the same authoring trick the pavilion arches and the glade's crown
+ * use. Aiming a fixture with Euler angles per instance would work too, and
+ * would cost a draw call per lamp.
+ */
+function rigAim(length: number): THREE.Matrix4 {
+  const lamp = new THREE.Vector3(STAGE_RIG_RADIUS, STAGE_RIG_HEIGHT, 0);
+  const target = new THREE.Vector3(0, STAGE_FLOOR_Y, 0);
+  const dir = new THREE.Vector3().subVectors(target, lamp).normalize();
+
+  // The cone runs from its top (the source) down its local -Y, so local +Y has
+  // to land on the reverse of the aim.
+  const quaternion = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    dir.clone().negate(),
+  );
+
+  const position = lamp.clone().addScaledVector(dir, length / 2);
+  return new THREE.Matrix4().compose(
+    position,
+    quaternion,
+    new THREE.Vector3(1, 1, 1),
+  );
+}
+
+/** Length of a beam, lamp to well past the stage. */
+const STAGE_BEAM_LENGTH = 5.6;
+
+/** A lamp housing, aimed at the stage. */
+export function stageLampGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("stageLamp", () => {
+    const body = lathe(
+      [
+        [0.0, 0.14],
+        [0.075, 0.14],
+        [0.085, 0.06],
+        [0.115, -0.04],
+        [0.125, -0.12],
+        [0.1, -0.14],
+        [0.0, -0.14],
+      ],
+      10,
+    );
+    body.applyMatrix4(rigAim(0));
+    body.computeVertexNormals();
+    body.computeBoundingSphere();
+    return body;
+  });
+}
+
+/** The volume one lamp's beam hangs in, aimed at the stage. */
+export function stageBeamGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("stageBeam", () => {
+    const cone = new THREE.CylinderGeometry(
+      0.1,
+      0.95,
+      STAGE_BEAM_LENGTH,
+      12,
+      5,
+      true,
+    );
+    cone.applyMatrix4(rigAim(STAGE_BEAM_LENGTH));
+    cone.computeVertexNormals();
+    cone.computeBoundingSphere();
+    return cone;
+  });
+}
+
+// -----------------------------------------------------------------------------
 // Wedding — havan kund
 // -----------------------------------------------------------------------------
+
+/**
+ * The sacred fire's body. Finer than the shared {@link flameGeometry} because
+ * the fire shader displaces it per-vertex — a coarse teardrop has nowhere for
+ * the whip to go.
+ */
+export function sacredFireGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("sacredFire", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.07, 0.03],
+        [0.12, 0.08],
+        [0.16, 0.16],
+        [0.185, 0.26],
+        [0.19, 0.36],
+        [0.175, 0.47],
+        [0.15, 0.58],
+        [0.12, 0.69],
+        [0.085, 0.79],
+        [0.055, 0.88],
+        [0.03, 0.95],
+        [0.0, 1.0],
+      ],
+      24,
+    ),
+  );
+}
+
+/**
+ * The smoke column above the kund: an open lathe widening as it climbs, with no
+ * caps at either end so the volume never shows a lid.
+ */
+export function smokePlumeGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("smokePlume", () =>
+    lathe(
+      [
+        [0.14, 0.0],
+        [0.17, 0.12],
+        [0.22, 0.28],
+        [0.3, 0.46],
+        [0.4, 0.66],
+        [0.5, 0.85],
+        [0.6, 1.0],
+      ],
+      16,
+    ),
+  );
+}
 
 /** Bevelled sandstone plinth the whole rig stands on. */
 export function plinthGeometry(): THREE.BufferGeometry {
@@ -2250,6 +2439,11 @@ export interface ProposalMaterials {
   readonly core: THREE.MeshStandardMaterial;
 }
 
+export interface SangeetMaterials {
+  readonly rig: THREE.MeshStandardMaterial;
+  readonly lens: THREE.MeshStandardMaterial;
+}
+
 export interface MehendiMaterials {
   readonly bark: THREE.MeshStandardMaterial;
   readonly teak: THREE.MeshStandardMaterial;
@@ -2274,6 +2468,7 @@ const weddingMaterialCache = new Map<string, WeddingMaterials>();
 const receptionMaterialCache = new Map<string, ReceptionMaterials>();
 const mehendiMaterialCache = new Map<string, MehendiMaterials>();
 const proposalMaterialCache = new Map<string, ProposalMaterials>();
+const sangeetMaterialCache = new Map<string, SangeetMaterials>();
 
 /** Late-bind the environment map once the renderer has produced one. */
 function bindEnv(
@@ -2356,6 +2551,42 @@ export function getWeddingMaterials(
 
   bindEnv(set.bronze, env, 1.6);
   bindEnv(set.sandstone, env, 0.55);
+  return set;
+}
+
+/**
+ * The two lit surfaces of the sangeet rig. Everything else in that world is a
+ * shader; these are standard materials because the fixtures want the scene's
+ * own lights on their housings.
+ */
+export function getSangeetMaterials(
+  chapter: ChapterConfig,
+  env: THREE.Texture | null,
+): SangeetMaterials {
+  let set = sangeetMaterialCache.get(chapter.id);
+
+  if (!set) {
+    set = {
+      rig: new THREE.MeshStandardMaterial({
+        color: "#1B1E24",
+        roughness: 0.42,
+        metalness: 0.85,
+        transparent: true,
+      }),
+      // Driven per-frame so the lenses flare with the rig.
+      lens: new THREE.MeshStandardMaterial({
+        color: chapter.palette.emissive,
+        emissive: new THREE.Color(chapter.palette.emissive),
+        emissiveIntensity: 3.4,
+        roughness: 1.0,
+        metalness: 0.0,
+        transparent: true,
+      }),
+    };
+    sangeetMaterialCache.set(chapter.id, set);
+  }
+
+  bindEnv(set.rig, env, 1.1);
   return set;
 }
 

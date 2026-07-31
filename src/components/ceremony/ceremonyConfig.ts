@@ -254,9 +254,11 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
       background: PALETTE.midnightIndigo,
     },
     camera: {
-      position: [0, 3.0, 8.5],
-      target: [0, 0.8, 0],
-      fov: 48,
+      // Raised and pulled back, so the shot looks down *into* the bowl rather
+      // than across the rim of it.
+      position: [0, 5.6, 11.0],
+      target: [0, 1.0, 0],
+      fov: 42,
     },
     lighting: {
       temperatureK: 3000,

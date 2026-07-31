@@ -25,9 +25,14 @@ import {
   createCrystalUniforms,
   createFlowerUniforms,
   createLeafUniforms,
+  createFireUniforms,
   createMarbleUniforms,
+  createSmokeUniforms,
   createMossUniforms,
   createShaftUniforms,
+  createStageUniforms,
+  type ShaftUniforms,
+  type StageUniforms,
   createWaterUniforms,
   createSilkUniforms,
   type CeremonyUniforms,
@@ -66,6 +71,7 @@ import {
   gladePostGeometry,
   getEnvMap,
   getProposalMaterials,
+  getSangeetMaterials,
   getMehendiMaterials,
   getReceptionMaterials,
   getWeddingMaterials,
@@ -83,6 +89,14 @@ import {
   pavilionDomeGeometry,
   pavilionPlatformGeometry,
   reflectingPoolGeometry,
+  stageBeamGeometry,
+  stageFloorGeometry,
+  stageLampGeometry,
+  stagePlatformGeometry,
+  stageTierGeometry,
+  stageTrussGeometry,
+  sacredFireGeometry,
+  smokePlumeGeometry,
   mullionGeometry,
   pillarCollarGeometry,
   pillarShaftGeometry,
@@ -101,6 +115,10 @@ import {
   GLADE_RADIUS,
   GLADE_RING_COUNT,
   GLADE_RING_RADIUS,
+  STAGE_FLOOR_Y,
+  STAGE_RIG_COUNT,
+  STAGE_RIG_HEIGHT,
+  STAGE_RIG_RADIUS,
   PAVILION_COLUMN_COUNT,
   PAVILION_FLOOR_Y,
   PAVILION_RADIUS,
@@ -1380,62 +1398,240 @@ function MehendiWorld({ chapter }: WorldProps): JSX.Element {
 }
 
 // -----------------------------------------------------------------------------
-// 4 — Sangeet: dark multi-faceted amphitheatre stage
+// 4 — Sangeet: a faceted amphitheatre under a sweeping lighting rig
 // -----------------------------------------------------------------------------
 
-function AmphitheaterWorld({ chapter }: WorldProps): JSX.Element {
-  const { primary, secondary, emissive } = chapter.palette;
-  const tiers = 4;
+const STAGE_SECTOR = (Math.PI * 2) / STAGE_RIG_COUNT;
+
+/** Four rising tiers. One buffer at unit radius, instanced at four scales. */
+const STAGE_TIERS: readonly Placement[] = [3.05, 3.6, 4.15, 4.7].map(
+  (radius, i) => ({
+    position: [0, STAGE_FLOOR_Y + i * 0.36, 0] as const,
+    scale: [radius, 1, radius] as const,
+  }),
+);
+
+/** Rig fixtures. Aim is baked into the geometry, so these only turn. */
+const STAGE_RIG: readonly Placement[] = Array.from(
+  { length: STAGE_RIG_COUNT },
+  (_, i) => ({
+    position: [0, 0, 0] as const,
+    rotation: [0, i * STAGE_SECTOR, 0] as const,
+  }),
+);
+
+/** The rig alternates two gels, so each set is one instanced draw call. */
+const STAGE_BEAMS_WARM: readonly Placement[] = STAGE_RIG.filter(
+  (_, i) => i % 2 === 0,
+);
+const STAGE_BEAMS_COOL: readonly Placement[] = STAGE_RIG.filter(
+  (_, i) => i % 2 === 1,
+);
+
+/**
+ * The amphitheatre's shader materials.
+ *
+ * One stone program serves both the faceted tiers and the mirror-polished
+ * stage, split by `uPolish` — the difference between them is a specular lobe
+ * and a facet blend, not a different material.
+ */
+interface StageShaders {
+  readonly tier: THREE.ShaderMaterial;
+  readonly floor: THREE.ShaderMaterial;
+  readonly truss: THREE.ShaderMaterial;
+  readonly beamWarm: THREE.ShaderMaterial;
+  readonly beamCool: THREE.ShaderMaterial;
+  readonly timed: readonly CeremonyUniforms[];
+  /** Every set carrying the rig, so the sweep stays in lockstep. */
+  readonly rigged: readonly StageUniforms[];
+}
+
+function buildStageShaders(chapter: ChapterConfig): StageShaders {
+  const gain = chapter.lighting.keyIntensity;
+
+  const program = (
+    name: "stagePolish" | "lightShaft",
+    uniforms: CeremonyUniforms,
+    extra?: Partial<THREE.ShaderMaterialParameters>,
+  ): THREE.ShaderMaterial => {
+    applyChapterUniforms(uniforms, chapter);
+    const [lr, lg, lb] = uniforms.uLightColor.value;
+    uniforms.uLightColor.value = [lr * gain, lg * gain, lb * gain];
+
+    const source = CEREMONY_SHADERS[name];
+    return new THREE.ShaderMaterial({
+      vertexShader: source.vertexShader,
+      fragmentShader: source.fragmentShader,
+      uniforms: asUniformMap(uniforms),
+      transparent: true,
+      ...extra,
+    });
+  };
+
+  const stage = (polish: number, facet: number): StageUniforms => {
+    const u = createStageUniforms();
+    u.uRigRadius.value = STAGE_RIG_RADIUS;
+    u.uRigCount.value = STAGE_RIG_COUNT;
+    u.uRigHeight.value = STAGE_RIG_HEIGHT;
+    u.uRigAimY.value = STAGE_FLOOR_Y;
+    u.uPolish.value = polish;
+    u.uFacetScale.value = facet;
+    return u;
+  };
+
+  const tierUniforms = stage(0, 3.4);
+  const floorUniforms = stage(1, 3.4);
+  const trussUniforms = stage(0.7, 9.0);
+
+  const tier = program("stagePolish", tierUniforms);
+  const floor = program("stagePolish", floorUniforms);
+  const truss = program("stagePolish", trussUniforms);
+
+  /**
+   * A gelled beam. The tint has to be written *after* the program is built,
+   * because that is where the chapter's own emissive is bound — the two halves
+   * of the rig differ by overriding it.
+   */
+  const beam = (
+    tint: readonly [number, number, number],
+  ): { material: THREE.ShaderMaterial; uniforms: ShaftUniforms } => {
+    const uniforms = createShaftUniforms();
+    uniforms.uIntensity.value = 0.5;
+    uniforms.uMotes.value = 0.75;
+
+    const material = program("lightShaft", uniforms, {
+      side: THREE.FrontSide,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    material.userData.baseOpacity = 0.9;
+    uniforms.uEmissive.value = [...tint];
+    return { material, uniforms };
+  };
+
+  const warm = beam(rgb(chapter.palette.emissive));
+  const cool = beam(rgb(chapter.palette.secondary));
+  const beamWarm = warm.material;
+  const beamCool = cool.material;
+  const warmUniforms = warm.uniforms;
+  const coolUniforms = cool.uniforms;
+
+  return {
+    tier,
+    floor,
+    truss,
+    beamWarm,
+    beamCool,
+    timed: [
+      tierUniforms,
+      floorUniforms,
+      trussUniforms,
+      warmUniforms,
+      coolUniforms,
+    ],
+    rigged: [tierUniforms, floorUniforms, trussUniforms],
+  };
+}
+
+const stageShaderCache = new Map<ChapterId, StageShaders>();
+
+/** Cached per chapter and never disposed — see {@link getMehendiShaders}. */
+function getStageShaders(chapter: ChapterConfig): StageShaders {
+  let set = stageShaderCache.get(chapter.id);
+  if (!set) {
+    set = buildStageShaders(chapter);
+    stageShaderCache.set(chapter.id, set);
+  }
+  return set;
+}
+
+function SangeetWorld({ chapter }: WorldProps): JSX.Element {
+  const renderer = useThree((state) => state.gl);
+  const env = useMemo(() => getEnvMap(renderer, "warm"), [renderer]);
+  const materials = useMemo(() => getSangeetMaterials(chapter, env), [chapter, env]);
+  const shaders = useMemo(() => getStageShaders(chapter), [chapter]);
+
+  const rigRef = useRef<THREE.Group>(null);
+  const clock = useRef(0);
+
+  useFrame((_state, delta) => {
+    clock.current += delta;
+    const t = clock.current;
+    const live = getStageShaders(chapter);
+    const surfaces = getSangeetMaterials(chapter, env);
+
+    for (const uniforms of live.timed) uniforms.uTime.value = t;
+
+    // The rig sweeps. The group turns and the shader's analytic rig angle is
+    // driven from the same value, so the pools of light on the stone track the
+    // fixtures instead of sliding out from under them.
+    const spin = t * 0.22;
+    if (rigRef.current) rigRef.current.rotation.y = spin;
+
+    const pulse = 0.72 + Math.sin(t * 2.3) * 0.18 + Math.sin(t * 3.7 + 1.1) * 0.1;
+    for (const uniforms of live.rigged) {
+      uniforms.uRigSpin.value = spin;
+      uniforms.uRigPulse.value = pulse;
+    }
+
+    surfaces.lens.emissiveIntensity = 2.6 + pulse * 2.2;
+  });
 
   return (
-    <group position={[0, 0, 0]}>
-      {/* Faceted stage platform */}
-      <mesh position={[0, 0.15, 0]}>
-        <cylinderGeometry args={[1.6, 1.8, 0.3, 8]} />
-        <meshStandardMaterial
-          color={primary}
-          flatShading
-          metalness={0.4}
-          roughness={0.5}
-          transparent
+    <group>
+      {/* Faceted stage block, and the polished disc laid over it. */}
+      <Part geometry={stagePlatformGeometry()} material={shaders.tier} />
+      <Part
+        geometry={stageFloorGeometry()}
+        material={shaders.floor}
+        // Clear of the platform's own cap: two millimetres left the two
+        // coplanar surfaces z-fighting into an eight-way fan.
+        position={[0, STAGE_FLOOR_Y + 0.014, 0]}
+        castShadow={false}
+      />
+
+      {/* Four rising tiers from one buffer. */}
+      <InstancedPart
+        geometry={stageTierGeometry()}
+        material={shaders.tier}
+        placements={STAGE_TIERS}
+      />
+
+      {/* The rig: truss, fixtures and their beams, all turning together. */}
+      <group ref={rigRef}>
+        <Part
+          geometry={stageTrussGeometry()}
+          material={shaders.truss}
+          position={[0, STAGE_RIG_HEIGHT, 0]}
+          castShadow={false}
         />
-      </mesh>
-      {/* Rising faceted seating tiers */}
-      {Array.from({ length: tiers }).map((_, i) => {
-        const r = 2.4 + i * 0.7;
-        const y = 0.3 + i * 0.35;
-        return (
-          <mesh key={i} position={[0, y, 0]}>
-            <cylinderGeometry args={[r, r, 0.25, 8, 1, true]} />
-            <meshStandardMaterial
-              color={primary}
-              flatShading
-              metalness={0.3}
-              roughness={0.7}
-              side={THREE.DoubleSide}
-              transparent
-            />
-          </mesh>
-        );
-      })}
-      {/* Stage-edge crimson footlights */}
-      {Array.from({ length: 8 }).map((_, i) => {
-        const a = (i / 8) * Math.PI * 2;
-        return (
-          <mesh
-            key={i}
-            position={[Math.cos(a) * 1.7, 0.32, Math.sin(a) * 1.7]}
-          >
-            <boxGeometry args={[0.16, 0.1, 0.16]} />
-            <meshStandardMaterial
-              color={secondary}
-              emissive={emissive}
-              emissiveIntensity={1.8}
-              transparent
-            />
-          </mesh>
-        );
-      })}
+        <InstancedPart
+          geometry={stageLampGeometry()}
+          material={materials.rig}
+          placements={STAGE_RIG}
+          castShadow={false}
+        />
+        <InstancedPart
+          geometry={lanternCoreGeometry()}
+          material={materials.lens}
+          placements={STAGE_RIG}
+          castShadow={false}
+        />
+        <InstancedPart
+          geometry={stageBeamGeometry()}
+          material={shaders.beamWarm}
+          placements={STAGE_BEAMS_WARM}
+          castShadow={false}
+          receiveShadow={false}
+        />
+        <InstancedPart
+          geometry={stageBeamGeometry()}
+          material={shaders.beamCool}
+          placements={STAGE_BEAMS_COOL}
+          castShadow={false}
+          receiveShadow={false}
+        />
+      </group>
     </group>
   );
 }
@@ -1482,10 +1678,89 @@ const KUND_FLAMES = [
   { x: 0.16, z: 0.05, scale: 0.55, rate: 7.9, phase: 3.1 },
 ] as const;
 
+/**
+ * The Wedding world's fire shaders.
+ *
+ * The kund's stone and metal were already procedural PBR; the fire was not —
+ * flames and coals were emissive standard materials, which can glow but cannot
+ * burn. These three programs replace that layer.
+ */
+interface FireShaders {
+  readonly flame: THREE.ShaderMaterial;
+  readonly coal: THREE.ShaderMaterial;
+  readonly smoke: THREE.ShaderMaterial;
+  readonly timed: readonly CeremonyUniforms[];
+}
+
+function buildFireShaders(chapter: ChapterConfig): FireShaders {
+  const program = (
+    name: "sacredFire" | "ember" | "smokePlume",
+    uniforms: CeremonyUniforms,
+    extra?: Partial<THREE.ShaderMaterialParameters>,
+  ): THREE.ShaderMaterial => {
+    applyChapterUniforms(uniforms, chapter);
+    const gain = chapter.lighting.keyIntensity;
+    const [lr, lg, lb] = uniforms.uLightColor.value;
+    uniforms.uLightColor.value = [lr * gain, lg * gain, lb * gain];
+
+    const source = CEREMONY_SHADERS[name];
+    return new THREE.ShaderMaterial({
+      vertexShader: source.vertexShader,
+      fragmentShader: source.fragmentShader,
+      uniforms: asUniformMap(uniforms),
+      transparent: true,
+      ...extra,
+    });
+  };
+
+  const flameUniforms = createFireUniforms();
+  const coalUniforms = createCeremonyUniforms();
+  const smokeUniforms = createSmokeUniforms();
+
+  // Additive and double-sided: the shell sums twice through the middle of each
+  // column, and the three bodies sum where they overlap.
+  const flame = program("sacredFire", flameUniforms, {
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  flame.userData.baseOpacity = 0.9;
+
+  const coal = program("ember", coalUniforms);
+
+  // Smoke occludes, so it blends normally rather than adding.
+  const smoke = program("smokePlume", smokeUniforms, {
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  smoke.userData.baseOpacity = 0.9;
+
+  return {
+    flame,
+    coal,
+    smoke,
+    timed: [flameUniforms, coalUniforms, smokeUniforms],
+  };
+}
+
+const fireShaderCache = new Map<ChapterId, FireShaders>();
+
+/** Cached per chapter and never disposed — see {@link getMehendiShaders}. */
+function getFireShaders(chapter: ChapterConfig): FireShaders {
+  let set = fireShaderCache.get(chapter.id);
+  if (!set) {
+    set = buildFireShaders(chapter);
+    fireShaderCache.set(chapter.id, set);
+  }
+  return set;
+}
+
 function HavanKundWorld({ chapter }: WorldProps): JSX.Element {
   const renderer = useThree((state) => state.gl);
   const env = useMemo(() => getEnvMap(renderer, "warm"), [renderer]);
   const materials = useMemo(() => getWeddingMaterials(chapter, env), [chapter, env]);
+
+  const shaders = useMemo(() => getFireShaders(chapter), [chapter]);
 
   const flameRefs = useRef<(THREE.Group | null)[]>([]);
   const clock = useRef(0);
@@ -1494,6 +1769,10 @@ function HavanKundWorld({ chapter }: WorldProps): JSX.Element {
   // one block. Vertical scale only — the base stays anchored in the ash.
   useFrame((_state, delta) => {
     clock.current += delta;
+
+    const live = getFireShaders(chapter);
+    for (const uniforms of live.timed) uniforms.uTime.value = clock.current;
+
     for (let i = 0; i < KUND_FLAMES.length; i++) {
       const group = flameRefs.current[i];
       if (!group) continue;
@@ -1552,9 +1831,21 @@ function HavanKundWorld({ chapter }: WorldProps): JSX.Element {
       />
       <InstancedPart
         geometry={emberGeometry()}
-        material={materials.ember}
+        material={shaders.coal}
         placements={KUND_EMBERS}
         castShadow={false}
+      />
+
+      {/* Smoke lifting off the fire, carrying its light up into the air above
+          the kund. Drawn before the flames so it sits behind them. */}
+      <Part
+        geometry={smokePlumeGeometry()}
+        material={shaders.smoke}
+        position={[0, 1.4, 0]}
+        scale={[0.62, 1.25, 0.62]}
+        castShadow={false}
+        receiveShadow={false}
+        renderOrder={1}
       />
 
       {/* Sacred fire — lathed teardrops rather than cones. */}
@@ -1567,11 +1858,11 @@ function HavanKundWorld({ chapter }: WorldProps): JSX.Element {
           position={[flame.x, 1.1, flame.z]}
         >
           <mesh
-            geometry={flameGeometry()}
-            material={materials.flame}
+            geometry={sacredFireGeometry()}
+            material={shaders.flame}
             castShadow={false}
             receiveShadow={false}
-            renderOrder={2}
+            renderOrder={3}
             userData={{ castsShadow: false }}
             dispose={null}
           />
@@ -1882,7 +2173,7 @@ const WORLD_BY_ID: Record<ChapterId, (props: WorldProps) => JSX.Element> = {
   proposal: ProposalWorld,
   engagement: EngagementWorld,
   mehendi: MehendiWorld,
-  sangeet: AmphitheaterWorld,
+  sangeet: SangeetWorld,
   wedding: HavanKundWorld,
   reception: ConservatoryWorld,
   legacy: LibraryHearthWorld,
