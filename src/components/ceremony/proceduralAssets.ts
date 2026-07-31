@@ -1951,6 +1951,272 @@ export function scatterOnGround(options: ScatterOptions): Placement[] {
   return placements;
 }
 
+// -----------------------------------------------------------------------------
+// Engagement — the marble pavilion and its reflecting pool
+// -----------------------------------------------------------------------------
+
+/** Columns in the ring, and the radius they stand on. */
+export const PAVILION_COLUMN_COUNT = 8;
+export const PAVILION_RADIUS = 1.9;
+/** Top of the stepped platform — the pavilion floor. */
+export const PAVILION_FLOOR_Y = 0.28;
+/** Height of a column, floor to the springing of the arches. */
+export const PAVILION_COLUMN_HEIGHT = 1.95;
+/** Where the arches spring from, in world Y. */
+export const PAVILION_SPRING_Y = PAVILION_FLOOR_Y + PAVILION_COLUMN_HEIGHT;
+
+/**
+ * Cut vertical flutes into a lathed solid by modulating its radius with the
+ * azimuth. Classical columns are fluted, and a smooth cylinder is the single
+ * thing that most gives away a lathed order.
+ */
+function fluteRadial(
+  geometry: THREE.BufferGeometry,
+  flutes: number,
+  depth: number,
+): THREE.BufferGeometry {
+  const pos = geometry.attributes.position as THREE.BufferAttribute;
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    const r = Math.hypot(x, z);
+    if (r < 1e-4) continue;
+
+    // Cosine grooves; the flat top of the wave is the arris between them.
+    const k = 1 - depth * (0.5 - 0.5 * Math.cos(Math.atan2(z, x) * flutes));
+    pos.setX(i, x * k);
+    pos.setZ(i, z * k);
+  }
+
+  pos.needsUpdate = true;
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/**
+ * A fluted marble column: moulded base, entasis-tapered fluted shaft, and a
+ * flared capital. Only the shaft is fluted — running the grooves through the
+ * base and capital would read as a machining error rather than an order.
+ */
+export function pavilionColumnGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("pavilionColumn", () => {
+    const h = PAVILION_COLUMN_HEIGHT;
+
+    const base = lathe(
+      [
+        [0.0, 0.0],
+        [0.2, 0.0],
+        [0.2, 0.05],
+        [0.17, 0.09],
+        [0.155, 0.14],
+        [0.135, 0.18],
+      ],
+      20,
+    );
+
+    // Entasis: the shaft swells slightly below the middle, then tapers.
+    const shaft = fluteRadial(
+      lathe(
+        [
+          [0.132, 0.18],
+          [0.138, h * 0.32],
+          [0.134, h * 0.55],
+          [0.12, h * 0.78],
+          [0.107, h - 0.16],
+        ],
+        // Six segments per flute. Fluting a lathe with fewer samples per groove
+        // than the groove has sides aliases it into flat panels.
+        96,
+      ),
+      16,
+      0.1,
+    );
+
+    const capital = lathe(
+      [
+        [0.107, h - 0.16],
+        [0.125, h - 0.115],
+        [0.15, h - 0.07],
+        [0.152, h - 0.03],
+        [0.185, h - 0.02],
+        [0.185, h],
+        [0.0, h],
+      ],
+      20,
+    );
+
+    const merged = mergeParts([
+      { geometry: base },
+      { geometry: shaft },
+      { geometry: capital },
+    ]);
+    base.dispose();
+    shaft.dispose();
+    capital.dispose();
+    return merged;
+  });
+}
+
+/**
+ * A semicircular arch spanning one bay, built from real voussoirs.
+ *
+ * Authored across a single bay springing at Y 0, so the colonnade is one
+ * instanced draw call rotated `i * sector` — the same trick the glade's crown
+ * uses. Each wedge is oriented by an explicit basis: along the arc, radial, and
+ * out of the arch's plane.
+ */
+export function pavilionArchGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("pavilionArch", () => {
+    const sector = (Math.PI * 2) / PAVILION_COLUMN_COUNT;
+    const start = new THREE.Vector3(PAVILION_RADIUS, 0, 0);
+    const end = new THREE.Vector3(
+      Math.cos(sector) * PAVILION_RADIUS,
+      0,
+      Math.sin(sector) * PAVILION_RADIUS,
+    );
+
+    const chord = new THREE.Vector3().subVectors(end, start);
+    const arcRadius = chord.length() / 2;
+    const centre = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+    const along = chord.clone().normalize();
+    const planeNormal = new THREE.Vector3()
+      .crossVectors(along, new THREE.Vector3(0, 1, 0))
+      .normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+
+    const voussoirs = 9;
+    const step = Math.PI / voussoirs;
+    // A hair of overlap, so the joints never open up under perspective.
+    const width = arcRadius * step * 1.06;
+
+    const parts: GeometryPart[] = [];
+    const block = bevelledBox(width, 0.26, 0.3, 0.012);
+
+    for (let i = 0; i < voussoirs; i++) {
+      const theta = (i + 0.5) * step;
+      const position = centre
+        .clone()
+        .addScaledVector(along, -arcRadius * Math.cos(theta))
+        .addScaledVector(up, arcRadius * Math.sin(theta));
+
+      const radial = position.clone().sub(centre).normalize();
+      const tangent = new THREE.Vector3().crossVectors(planeNormal, radial);
+
+      parts.push({
+        geometry: block,
+        matrix: new THREE.Matrix4()
+          .makeBasis(tangent, radial, planeNormal)
+          .setPosition(position),
+      });
+    }
+
+    const merged = mergeParts(parts);
+    block.dispose();
+    return merged;
+  });
+}
+
+/** Stepped octagonal platform the pavilion stands on. */
+export function pavilionPlatformGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("pavilionPlatform", () =>
+    // Eight lathe segments make an octagon rather than a disc.
+    lathe(
+      // Every station sits at or above the waterline: a platform that
+      // straddled Y 0 would have its own mirror image overlap it.
+      [
+        [0.0, 0.0],
+        [3.15, 0.0],
+        [3.15, 0.08],
+        [2.95, 0.08],
+        [2.95, 0.15],
+        [2.72, 0.15],
+        [2.72, 0.21],
+        [2.55, 0.21],
+        [2.55, PAVILION_FLOOR_Y],
+        [0.0, PAVILION_FLOOR_Y],
+      ],
+      8,
+    ),
+  );
+}
+
+/** Moulded cornice ring carried on the arches. */
+export function pavilionCorniceGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("pavilionCornice", () =>
+    lathe(
+      [
+        [2.02, 0.0],
+        [2.16, 0.06],
+        [2.22, 0.14],
+        [2.18, 0.2],
+        [2.06, 0.24],
+        [1.98, 0.34],
+        [1.92, 0.36],
+      ],
+      PAVILION_COLUMN_COUNT * 3,
+    ),
+  );
+}
+
+/** Ribbed marble dome with its finial, merged into one buffer. */
+export function pavilionDomeGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("pavilionDome", () => {
+    const dome = fluteRadial(
+      lathe(
+        [
+          [1.92, 0.0],
+          [1.9, 0.14],
+          [1.82, 0.36],
+          [1.66, 0.6],
+          [1.42, 0.82],
+          [1.08, 1.0],
+          [0.66, 1.12],
+          [0.26, 1.18],
+          [0.0, 1.2],
+        ],
+        96,
+      ),
+      16,
+      0.045,
+    );
+
+    const finial = lathe(
+      [
+        [0.0, 1.16],
+        [0.14, 1.2],
+        [0.16, 1.27],
+        [0.1, 1.33],
+        [0.06, 1.42],
+        [0.09, 1.5],
+        [0.05, 1.58],
+        [0.0, 1.66],
+      ],
+      12,
+    );
+
+    const merged = mergeParts([{ geometry: dome }, { geometry: finial }]);
+    dome.dispose();
+    finial.dispose();
+    return merged;
+  });
+}
+
+/**
+ * The reflecting pool. Flat and barely tessellated on purpose — every ripple in
+ * this world is a per-pixel normal, so vertices here would buy nothing.
+ */
+export function reflectingPoolGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("reflectingPool", () => {
+    // Wide enough that its edge sits well beyond the fog rather than cutting a
+    // visible circle across the horizon.
+    const geometry = new THREE.CircleGeometry(30, 64);
+    geometry.rotateX(-Math.PI / 2);
+    return geometry;
+  });
+}
+
 // =============================================================================
 // Materials
 // =============================================================================

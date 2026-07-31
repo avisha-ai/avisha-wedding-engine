@@ -72,6 +72,8 @@ export const PALETTE = {
   // Architectural material tones for the per-chapter worlds.
   gladeMoss: "#2F5D46",
   twilightViolet: "#221C46",
+  poolBlue: "#3E5C77",
+  dawnSky: "#A8BBD4",
   glassTint: "#CFE3E8",
   sandstone: "#C69B6D",
   bronze: "#7A5A2E",
@@ -186,29 +188,29 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
     transitionDuration: 2.0,
   },
 
-  // 2 — Engagement: a geometric sandstone stepwell, warm afternoon.
+  // 2 — Engagement: a white marble pavilion standing in a reflecting pool.
   engagement: {
     id: "engagement",
     title: "Engagement",
-    subtitle: "Vows exchanged on a sandstone stepwell.",
+    subtitle: "Vows exchanged in a marble pavilion.",
     palette: {
-      primary: PALETTE.sandstone,
+      primary: PALETTE.poolBlue,
       secondary: PALETTE.champagneGold,
       emissive: PALETTE.turmericGold,
-      background: PALETTE.sandstone,
+      background: PALETTE.dawnSky,
     },
     camera: {
-      position: [0, 4.2, 9.5],
-      target: [0, 0.6, 0],
-      fov: 46,
+      position: [0, 3.6, 11.0],
+      target: [0, 1.5, 0],
+      fov: 44,
     },
     lighting: {
-      temperatureK: 4000,
-      keyIntensity: 1.3,
+      temperatureK: 4600,
+      keyIntensity: 0.95,
       keyDirection: [4, 8, 3],
-      ambientIntensity: 0.55,
-      hemiIntensity: 0.6,
-      fogDensity: 0.012,
+      ambientIntensity: 0.45,
+      hemiIntensity: 0.5,
+      fogDensity: 0.038,
     },
     transitionDuration: 2.4,
   },

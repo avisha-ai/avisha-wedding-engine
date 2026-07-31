@@ -231,6 +231,49 @@ export interface FlowerUniforms extends CeremonyUniforms, GladeRingUniforms {
   readonly uBloomGlow: Uniform<number>;
 }
 
+/** Extra uniforms for {@link CEREMONY_SHADERS.veinedMarble}. */
+export interface MarbleUniforms extends CeremonyUniforms {
+  /** Vein lattice frequency. Higher = tighter, busier veining. */
+  readonly uVeinScale: Uniform<number>;
+  /** Specular gain. 1 is a honed finish, 3 a mirror polish. */
+  readonly uPolish: Uniform<number>;
+  /** Height the pavilion floor sits at, for the contact-darkening term. */
+  readonly uFloorY: Uniform<number>;
+}
+
+/** Fresh marble uniform set. */
+export function createMarbleUniforms(): MarbleUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uVeinScale: { value: 1.5 },
+    uPolish: { value: 1.15 },
+    uFloorY: { value: 0 },
+  };
+}
+
+/** Extra uniforms shared by the water surface and the reflections beneath it. */
+export interface WaterUniforms extends CeremonyUniforms {
+  /** Wavelet frequency across the pool. */
+  readonly uRippleScale: Uniform<number>;
+  /** Peak wavelet height, in world units. */
+  readonly uRippleHeight: Uniform<number>;
+  /** Strength of the expanding drop rings. `0` stills the pool. */
+  readonly uDrops: Uniform<number>;
+  /** Y of the water plane — the mirror the reflections are cast about. */
+  readonly uWaterY: Uniform<number>;
+}
+
+/** Fresh water uniform set. */
+export function createWaterUniforms(): WaterUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uRippleScale: { value: 1.0 },
+    uRippleHeight: { value: 0.05 },
+    uDrops: { value: 1.0 },
+    uWaterY: { value: 0 },
+  };
+}
+
 /** Fresh wildflower uniform set. */
 export function createFlowerUniforms(): FlowerUniforms {
   return {
@@ -1117,6 +1160,302 @@ const WILDFLOWER_FRAGMENT = /* glsl */ `
   }
 `;
 
+// -----------------------------------------------------------------------------
+// Engagement — the marble pavilion and its reflecting pool
+// -----------------------------------------------------------------------------
+
+/**
+ * The pool's surface field: two crossed wavelet trains plus expanding drop
+ * rings, with the analytic gradient alongside.
+ *
+ * Returns `xyz` = the surface gradient (∂h/∂x, ∂h/∂z packed into x and z, with
+ * `y` carrying the height itself). Both the water and the reflections beneath
+ * it read from this one function, which is what keeps a column's reflection
+ * bending in step with the ripple that crosses it.
+ */
+const WATER_FIELD = /* glsl */ `
+  uniform float uRippleScale;
+  uniform float uRippleHeight;
+  uniform float uDrops;
+
+  float hash21(float n) {
+    return fract(sin(n * 127.1) * 43758.5453);
+  }
+
+  vec3 waterField(vec2 p, float t) {
+    float s = uRippleScale;
+
+    // Two travelling trains at different bearings and speeds. Analytic, so the
+    // gradient below is exact rather than a finite difference.
+    float a1 = (p.x * 3.1 + p.y * 2.2) * s + t * 0.85;
+    float a2 = (p.x * -1.9 + p.y * 3.4) * s + t * 1.23;
+    float a3 = (p.x * 5.7 + p.y * -4.4) * s + t * 1.9;
+
+    float h = sin(a1) * 0.5 + sin(a2) * 0.34 + sin(a3) * 0.16;
+    vec2 g = vec2(
+      cos(a1) * 3.1 * s * 0.5 + cos(a2) * -1.9 * s * 0.34 + cos(a3) * 5.7 * s * 0.16,
+      cos(a1) * 2.2 * s * 0.5 + cos(a2) * 3.4 * s * 0.34 + cos(a3) * -4.4 * s * 0.16
+    );
+
+    // Drop rings. Each source fires on its own cycle, walks outward and fades;
+    // quantising the cycle gives every strike a fresh pseudo-random position.
+    for (int i = 0; i < 3; i++) {
+      float fi = float(i);
+      float cycle = t * 0.33 + fi * 0.41;
+      float strike = floor(cycle);
+      float age = fract(cycle);
+
+      vec2 c = vec2(
+        hash21(strike + fi * 17.3) - 0.5,
+        hash21(strike + fi * 31.7) - 0.5
+      ) * 9.0;
+
+      float d = length(p - c) + 1e-4;
+      float r = age * 4.2;
+      float band = exp(-abs(d - r) * 5.5) * (1.0 - age) * uDrops;
+
+      h += band * 0.55;
+      // d(band)/dd, projected onto the radial direction.
+      g += (-sign(d - r) * 5.5 * band * 0.55) * ((p - c) / d);
+    }
+
+    return vec3(g.x, h, g.y) * uRippleHeight;
+  }
+`;
+
+/**
+ * Polished white marble.
+ *
+ * Veining is the textbook construction and still the best one: turbulence
+ * (summed |noise| octaves) warps the domain, a sine band is taken through it,
+ * and the band is sharpened by a high power into filaments. Two families cross
+ * at different scales and bearings so the stone never reads as stripes.
+ *
+ * Marble is also *translucent* — the reason it looks expensive and plaster does
+ * not. The shadow side is lifted by a wrapped transmission term rather than
+ * falling to flat ambient, and the specular exponent rides the veining, because
+ * the softer mineral in a vein takes a slightly duller polish than the ground.
+ */
+const VEINED_MARBLE_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uVeinScale;
+  uniform float uPolish;
+  uniform float uFloorY;
+
+  varying vec3 vLocalPos;
+
+  ${VALUE_NOISE_3D}
+
+  float turbulence(vec3 p) {
+    float sum = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 4; i++) {
+      sum += abs(valueNoise(p) - 0.5) * amp;
+      p *= 2.03;
+      amp *= 0.5;
+    }
+    return sum;
+  }
+
+  void main() {
+    vec3 P = vWorldPos * uVeinScale;
+
+    // The warp has to vary across the *object*, not across the scene. Sampled
+    // too coarsely it stays near-constant over a single mass, and the sharpened
+    // band degenerates into one dead-straight vein — which is exactly what ran
+    // down the middle of the dome before this was raised.
+    float warpA = turbulence(P * 1.35);
+    float bandA = sin(P.x * 0.9 + P.y * 0.35 + P.z * 0.6 + warpA * 7.5);
+    float veinA = pow(1.0 - abs(bandA), 14.0);
+
+    float warpB = turbulence(P * 3.1 + 11.0);
+    float bandB = sin(P.x * -0.4 + P.y * 1.1 + P.z * 0.8 + warpB * 9.0);
+    float veinB = pow(1.0 - abs(bandB), 26.0);
+
+    float veining = clamp(veinA * 0.85 + veinB * 0.55, 0.0, 1.0);
+    float grain = valueNoise(P * 14.0);
+
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uLightDir);
+    vec3 H = normalize(L + V);
+
+    float wrap = clamp(dot(N, L), 0.0, 1.0) * 0.72 + 0.28;
+
+    // Vein mineral polishes duller than the ground it runs through.
+    float rough = mix(0.06, 0.22, veining) + grain * 0.03;
+    float spec = pow(clamp(dot(N, H), 0.0, 1.0), mix(190.0, 40.0, rough)) * uPolish;
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
+
+    // Light creeping a few millimetres into the stone.
+    float sss = pow(clamp(dot(V, -normalize(L + N * 0.5)), 0.0, 1.0), 2.0);
+
+    vec3 stone = vec3(0.94, 0.93, 0.90);
+    vec3 veinTone = mix(vec3(0.40, 0.39, 0.43), uSecondary, 0.35);
+    vec3 base = mix(stone, veinTone, veining) * mix(0.97, 1.03, grain);
+
+    // Contact darkening: custom shaders in this project do not sample the
+    // shadow map, so the crease where stone meets floor is shaded by hand.
+    float contact = smoothstep(0.0, 0.55, vWorldPos.y - uFloorY) * 0.35 + 0.65;
+
+    vec3 color = base * mix(vec3(0.19, 0.19, 0.23), vec3(0.86), wrap) * uLightColor;
+    color *= contact;
+    color += uLightColor * spec * 0.8;
+    color += mix(uSecondary, vec3(1.0), 0.5) * fres * 0.35;
+    color += stone * sss * uLightColor * 0.3;
+    color *= mix(0.92, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
+/**
+ * Vertex stage for the pavilion's mirror image.
+ *
+ * The reflection is real geometry: the whole pavilion drawn again under a
+ * `scale(1, -1, 1)` about the water plane, which for a flat mirror is exactly
+ * correct and costs no second render pass. What this stage adds is the bending
+ * — each vertex is pushed sideways by the pool's own gradient, with the throw
+ * growing the further below the surface it sits, so the columns break up in the
+ * water instead of standing as a rigid upside-down copy.
+ */
+const MARBLE_REFLECTION_VERTEX = /* glsl */ `
+  precision highp float;
+
+  uniform float uTime;
+  uniform float uWaterY;
+
+  varying vec2  vUv;
+  varying vec3  vWorldNormal;
+  varying vec3  vWorldPos;
+  varying vec3  vLocalPos;
+  varying float vDepth;
+
+  ${INSTANCED_MODEL_MATRIX}
+  ${WATER_FIELD}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    mat4 M = instancedModelMatrix();
+    vec4 world = M * vec4(position, 1.0);
+
+    // How far under the surface this vertex has been mirrored to.
+    float depth = max(uWaterY - world.y, 0.0);
+    vDepth = depth;
+
+    // Bend, don't smear: the throw is capped both by clamping how deep the
+    // surface is allowed to act and by limiting the gradient itself. Left
+    // unbounded, the mirrored dome five units down slides off its own footprint.
+    vec3 field = waterField(world.xz, uTime);
+    vec2 throw2 = clamp(field.xz, vec2(-0.6), vec2(0.6));
+    world.xz += throw2 * min(depth, 1.6) * 0.55;
+
+    vWorldPos = world.xyz;
+    vWorldNormal = normalize(mat3(M) * normal);
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * The pavilion's reflection: marble read through water.
+ *
+ * Deliberately not the marble shader — a mirror image is dimmer, colour-shifted
+ * toward the body of the water, and loses contrast with depth. Running the full
+ * veining down here would cost as much as the pavilion itself for detail no one
+ * can resolve through a rippling surface.
+ */
+const MARBLE_REFLECTION_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  varying vec3  vLocalPos;
+  varying float vDepth;
+
+  void main() {
+    vec3 N = normalize(vWorldNormal);
+    vec3 L = normalize(uLightDir);
+
+    // The mirrored copy has flipped winding, so the lighting is taken on the
+    // absolute facing rather than the signed one.
+    float wrap = abs(dot(N, L)) * 0.6 + 0.4;
+
+    vec3 stone = vec3(0.9, 0.89, 0.87) * wrap * uLightColor;
+
+    // Sink toward the water's own colour, and lose the image with depth.
+    vec3 body = mix(uPrimary, uSecondary, 0.35) * 0.35;
+    float sink = exp(-vDepth * 0.55);
+
+    vec3 color = mix(body, stone, sink) * 0.72;
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity * (0.28 + sink * 0.62));
+  }
+`;
+
+/**
+ * The reflecting pool.
+ *
+ * A transparent, tinted sheet laid over the mirrored pavilion. Its normal comes
+ * from the analytic gradient of {@link WATER_FIELD}, so the sun glint, the
+ * sheen and the drop rings all agree with the same surface the reflections
+ * below are being bent by.
+ *
+ * Alpha runs *against* the Fresnel term rather than with it. That looks
+ * backwards for a mirror, but the reflection here lives beneath the plane
+ * rather than in it: thinning the water at grazing angles is what lets the
+ * columns come through where a real pool would be most reflective.
+ */
+const MIRROR_WATER_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  varying vec3 vLocalPos;
+
+  ${WATER_FIELD}
+
+  void main() {
+    vec2 p = vWorldPos.xz;
+    vec3 field = waterField(p, uTime);
+
+    // The pool runs to thirty units; out there a wavelet is far narrower than a
+    // pixel and the surface turns to corduroy. Same distance LOD as the moss.
+    float detail = exp(-length(cameraPosition - vWorldPos) * 0.055);
+    field.xz *= detail;
+
+    // Surface normal of the height field: (-dh/dx, 1, -dh/dz).
+    vec3 N = normalize(vec3(-field.x, 1.0, -field.z));
+
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uLightDir);
+    vec3 H = normalize(L + V);
+
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
+
+    // A hard sun glint and a broader sheen: still water carries both.
+    float glint = pow(clamp(dot(N, H), 0.0, 1.0), 420.0);
+    float sheen = pow(clamp(dot(N, H), 0.0, 1.0), 26.0);
+
+    // Where a ripple crests it catches the sky; in the troughs it stays dark.
+    float crest = clamp(field.y * 6.0 + 0.5, 0.0, 1.0);
+
+    vec3 body = mix(uPrimary, uSecondary, 0.45) * 0.28;
+    vec3 sky  = mix(uSecondary, vec3(1.0), 0.35);
+
+    vec3 color = mix(body, sky * 0.5, fres * 0.8 + crest * 0.2);
+    color += uLightColor * glint * 2.6;
+    color += uLightColor * sheen * 0.28;
+    color += uEmissive * crest * 0.06;
+    color *= mix(0.9, 1.0, uTransition);
+
+    // Thin at grazing so the reflection reads; thicker looking straight down.
+    float alpha = mix(0.62, 0.16, fres) + glint * 0.6;
+
+    gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0) * uOpacity);
+  }
+`;
+
 /**
  * Hook: henna-vine growth. Placeholder pulses a mask so vines "draw" over time.
  * Replace with the real SDF vine field.
@@ -1165,6 +1504,9 @@ export type CeremonyShaderName =
   | "lightShaft"
   | "mossCarpet"
   | "wildflower"
+  | "veinedMarble"
+  | "marbleReflection"
+  | "mirrorWater"
   | "hennaVine"
   | "ember";
 
@@ -1201,6 +1543,20 @@ export const CEREMONY_SHADERS: Readonly<
   mossCarpet: {
     vertexShader: MOSS_VERTEX,
     fragmentShader: MOSS_CARPET_FRAGMENT,
+  },
+  // Marble and the pool share the glade's instancing-aware vertex stage; only
+  // the reflection needs its own, to bend with the water.
+  veinedMarble: {
+    vertexShader: GLADE_VERTEX,
+    fragmentShader: VEINED_MARBLE_FRAGMENT,
+  },
+  marbleReflection: {
+    vertexShader: MARBLE_REFLECTION_VERTEX,
+    fragmentShader: MARBLE_REFLECTION_FRAGMENT,
+  },
+  mirrorWater: {
+    vertexShader: GLADE_VERTEX,
+    fragmentShader: MIRROR_WATER_FRAGMENT,
   },
   wildflower: {
     vertexShader: WILDFLOWER_VERTEX,

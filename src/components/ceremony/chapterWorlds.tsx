@@ -25,8 +25,10 @@ import {
   createCrystalUniforms,
   createFlowerUniforms,
   createLeafUniforms,
+  createMarbleUniforms,
   createMossUniforms,
   createShaftUniforms,
+  createWaterUniforms,
   createSilkUniforms,
   type CeremonyUniforms,
   type GladeRingUniforms,
@@ -75,6 +77,12 @@ import {
   lanternGlowGeometry,
   lightShaftGeometry,
   mossTuftGeometry,
+  pavilionArchGeometry,
+  pavilionColumnGeometry,
+  pavilionCorniceGeometry,
+  pavilionDomeGeometry,
+  pavilionPlatformGeometry,
+  reflectingPoolGeometry,
   mullionGeometry,
   pillarCollarGeometry,
   pillarShaftGeometry,
@@ -93,6 +101,10 @@ import {
   GLADE_RADIUS,
   GLADE_RING_COUNT,
   GLADE_RING_RADIUS,
+  PAVILION_COLUMN_COUNT,
+  PAVILION_FLOOR_Y,
+  PAVILION_RADIUS,
+  PAVILION_SPRING_Y,
   DAYBED_HALF_X,
   DAYBED_HALF_Z,
   DAYBED_RAIL_Y,
@@ -687,53 +699,207 @@ function ProposalWorld({ chapter }: WorldProps): JSX.Element {
 }
 
 // -----------------------------------------------------------------------------
-// 2 — Engagement: geometric sandstone stepwell
+// 2 — Engagement: a marble pavilion standing in a reflecting pool
 // -----------------------------------------------------------------------------
 
-function StepwellWorld({ chapter }: WorldProps): JSX.Element {
-  const { primary, secondary } = chapter.palette;
-  const levels = 5;
+/** The pool's surface, and the plane the pavilion is mirrored about. */
+const WATER_Y = 0;
+
+const PAVILION_SECTOR = (Math.PI * 2) / PAVILION_COLUMN_COUNT;
+
+const PAVILION_COLUMNS: readonly Placement[] = Array.from(
+  { length: PAVILION_COLUMN_COUNT },
+  (_, i) => {
+    const angle = i * PAVILION_SECTOR;
+    return {
+      position: [
+        Math.cos(angle) * PAVILION_RADIUS,
+        PAVILION_FLOOR_Y,
+        Math.sin(angle) * PAVILION_RADIUS,
+      ] as const,
+      // Turned so the vein field, which is solved in world space, never
+      // repeats the same figure twice around the ring.
+      rotation: [0, angle, 0] as const,
+    };
+  },
+);
+
+const PAVILION_ARCHES: readonly Placement[] = Array.from(
+  { length: PAVILION_COLUMN_COUNT },
+  (_, i) => ({
+    position: [0, PAVILION_SPRING_Y, 0] as const,
+    rotation: [0, i * PAVILION_SECTOR, 0] as const,
+  }),
+);
+
+/**
+ * The Engagement world's shader materials.
+ *
+ * Three programs: the marble, the pool, and the pavilion's mirror image. The
+ * reflection is real geometry — the whole pavilion drawn a second time under a
+ * `scale(1, -1, 1)` about the water plane, which for a flat mirror is exactly
+ * right and costs two extra instanced draw calls instead of a second render
+ * pass into an off-screen target. Ripples then bend it in the vertex stage, so
+ * the reflection breaks up in step with the surface above it.
+ */
+interface PavilionShaders {
+  readonly marble: THREE.ShaderMaterial;
+  readonly reflection: THREE.ShaderMaterial;
+  readonly water: THREE.ShaderMaterial;
+  readonly timed: readonly CeremonyUniforms[];
+}
+
+function buildPavilionShaders(chapter: ChapterConfig): PavilionShaders {
+  const program = (
+    name: "veinedMarble" | "marbleReflection" | "mirrorWater",
+    uniforms: CeremonyUniforms,
+    extra?: Partial<THREE.ShaderMaterialParameters>,
+  ): THREE.ShaderMaterial => {
+    applyChapterUniforms(uniforms, chapter);
+    const gain = chapter.lighting.keyIntensity;
+    const [lr, lg, lb] = uniforms.uLightColor.value;
+    uniforms.uLightColor.value = [lr * gain, lg * gain, lb * gain];
+
+    const source = CEREMONY_SHADERS[name];
+    return new THREE.ShaderMaterial({
+      vertexShader: source.vertexShader,
+      fragmentShader: source.fragmentShader,
+      uniforms: asUniformMap(uniforms),
+      transparent: true,
+      ...extra,
+    });
+  };
+
+  const marbleUniforms = createMarbleUniforms();
+  marbleUniforms.uFloorY.value = PAVILION_FLOOR_Y;
+
+  const reflectionUniforms = createWaterUniforms();
+  reflectionUniforms.uWaterY.value = WATER_Y;
+
+  const waterUniforms = createWaterUniforms();
+  waterUniforms.uWaterY.value = WATER_Y;
+
+  const marble = program("veinedMarble", marbleUniforms);
+
+  // Mirroring flips the winding, so the reflected copy has to be double-sided
+  // or it culls away entirely.
+  const reflection = program("marbleReflection", reflectionUniforms, {
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  reflection.userData.baseOpacity = 0.9;
+
+  const water = program("mirrorWater", waterUniforms, {
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  water.userData.baseOpacity = 0.9;
+
+  return {
+    marble,
+    reflection,
+    water,
+    timed: [marbleUniforms, reflectionUniforms, waterUniforms],
+  };
+}
+
+const pavilionShaderCache = new Map<ChapterId, PavilionShaders>();
+
+/** Cached per chapter and never disposed — see {@link getMehendiShaders}. */
+function getPavilionShaders(chapter: ChapterConfig): PavilionShaders {
+  let set = pavilionShaderCache.get(chapter.id);
+  if (!set) {
+    set = buildPavilionShaders(chapter);
+    pavilionShaderCache.set(chapter.id, set);
+  }
+  return set;
+}
+
+/**
+ * The pavilion itself, drawn once for real and once mirrored.
+ *
+ * Sharing one subtree between the two passes is the point: the reflection
+ * cannot drift out of step with the thing it reflects, because it is the same
+ * placements and the same buffers.
+ */
+function PavilionMasses({
+  material,
+  castShadow,
+}: {
+  readonly material: THREE.Material;
+  readonly castShadow: boolean;
+}): JSX.Element {
+  return (
+    <>
+      <Part
+        geometry={pavilionPlatformGeometry()}
+        material={material}
+        castShadow={castShadow}
+        receiveShadow={castShadow}
+      />
+      <InstancedPart
+        geometry={pavilionColumnGeometry()}
+        material={material}
+        placements={PAVILION_COLUMNS}
+        castShadow={castShadow}
+        receiveShadow={castShadow}
+      />
+      <InstancedPart
+        geometry={pavilionArchGeometry()}
+        material={material}
+        placements={PAVILION_ARCHES}
+        castShadow={castShadow}
+        receiveShadow={castShadow}
+      />
+      <Part
+        geometry={pavilionCorniceGeometry()}
+        material={material}
+        position={[0, PAVILION_SPRING_Y + 0.72, 0]}
+        castShadow={castShadow}
+        receiveShadow={castShadow}
+      />
+      <Part
+        geometry={pavilionDomeGeometry()}
+        material={material}
+        position={[0, PAVILION_SPRING_Y + 1.06, 0]}
+        castShadow={castShadow}
+        receiveShadow={castShadow}
+      />
+    </>
+  );
+}
+
+function EngagementWorld({ chapter }: WorldProps): JSX.Element {
+  const shaders = useMemo(() => getPavilionShaders(chapter), [chapter]);
+  const clock = useRef(0);
+
+  useFrame((_state, delta) => {
+    clock.current += delta;
+    const live = getPavilionShaders(chapter);
+    for (const uniforms of live.timed) uniforms.uTime.value = clock.current;
+  });
 
   return (
-    <group position={[0, 0.4, 0]}>
-      {Array.from({ length: levels }).map((_, i) => {
-        const t = i / (levels - 1);
-        const size = 3.4 - t * 2.6; // narrows as it descends
-        const y = -t * 1.8;
-        return (
-          <mesh key={i} position={[0, y, 0]}>
-            <boxGeometry args={[size, 0.28, size]} />
-            <meshStandardMaterial
-              color={primary}
-              transparent
-              roughness={0.9}
-              metalness={0.05}
-            />
-          </mesh>
-        );
-      })}
-      {/* Central pedestal at the base of the well */}
-      <mesh position={[0, -1.55, 0]}>
-        <boxGeometry args={[0.5, 0.5, 0.5]} />
-        <GoldMaterial chapter={chapter} />
-      </mesh>
-      {/* Corner lamps */}
-      {[
-        [-1.5, 0, -1.5],
-        [1.5, 0, -1.5],
-        [-1.5, 0, 1.5],
-        [1.5, 0, 1.5],
-      ].map((p, i) => (
-        <mesh key={i} position={[p[0], 0.4, p[2]]}>
-          <sphereGeometry args={[0.12, 12, 12]} />
-          <meshStandardMaterial
-            color={secondary}
-            emissive={chapter.palette.emissive}
-            emissiveIntensity={1.4}
-            transparent
-          />
-        </mesh>
-      ))}
+    <group>
+      {/* The pavilion. */}
+      <PavilionMasses material={shaders.marble} castShadow />
+
+      {/* Its reflection: the same subtree, mirrored about the pool. Kept out of
+          the shadow pass entirely — an upside-down pavilion casting shade would
+          be nonsense. */}
+      <group scale={[1, -1, 1]} renderOrder={1}>
+        <PavilionMasses material={shaders.reflection} castShadow={false} />
+      </group>
+
+      {/* The pool, laid over the reflection. */}
+      <Part
+        geometry={reflectingPoolGeometry()}
+        material={shaders.water}
+        position={[0, WATER_Y, 0]}
+        castShadow={false}
+        receiveShadow={false}
+        renderOrder={2}
+      />
     </group>
   );
 }
@@ -1714,7 +1880,7 @@ function LibraryHearthWorld({ chapter }: WorldProps): JSX.Element {
 
 const WORLD_BY_ID: Record<ChapterId, (props: WorldProps) => JSX.Element> = {
   proposal: ProposalWorld,
-  engagement: StepwellWorld,
+  engagement: EngagementWorld,
   mehendi: MehendiWorld,
   sangeet: AmphitheaterWorld,
   wedding: HavanKundWorld,
