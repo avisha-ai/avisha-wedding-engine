@@ -41,6 +41,7 @@ import { ChapterWorld, applyWorldFade } from "./chapterWorlds";
 import { ChapterParticles } from "./ceremonyParticles";
 import { CeremonySoundscape } from "./ceremonyAudio";
 import SimulationOverlay from "./SimulationOverlay";
+import InvitationOverlay from "./InvitationOverlay";
 
 // -----------------------------------------------------------------------------
 // Public props
@@ -53,6 +54,11 @@ export interface CeremonyCanvasProps {
   readonly onChapterChange?: (chapter: ChapterId) => void;
   /** Show the built-in prev/next + chapter label overlay. Defaults to `true`. */
   readonly showControls?: boolean;
+  /**
+   * Play the opening camera move on first mount. Defaults to `true`, and is
+   * skipped regardless for viewers who ask for reduced motion.
+   */
+  readonly intro?: boolean;
   /** Extra classes for the wrapping element. */
   readonly className?: string;
 }
@@ -66,6 +72,37 @@ type NumberRef = { current: number };
  * without paying for a 2048² depth pass every frame alongside bloom.
  */
 const SHADOW_MAP_SIZE = 1024;
+
+/**
+ * The opening move.
+ *
+ * The camera starts high and outside the wisteria arch — above the crown, wide
+ * enough to take in the whole approach — and settles down through it onto the
+ * chapter's own framing. The descent passes the arch's crown (its span tops out
+ * around 4.0) on the way down, so the blossom sweeps up and out of frame and
+ * leaves the glade behind it.
+ *
+ * The start is on roughly the same bearing as the settled camera, pushed out
+ * and up; keeping the bearing means the move is a fall rather than an orbit,
+ * which is what lets it stay slow without feeling like a turntable.
+ */
+const INTRO = {
+  position: [5.4, 10.2, 12.6] as const,
+  target: [0, 3.4, 0] as const,
+  /** Wider at the top of the move, narrowing into the chapter's own fov. */
+  fov: 54,
+  /** Seconds. Long enough to read as an establishing shot. */
+  duration: 7.5,
+} as const;
+
+/** Viewers who ask for reduced motion get the settled framing immediately. */
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
 
 /**
  * Half-extent of the orthographic shadow frustum. Sized to the widest world
@@ -103,9 +140,10 @@ function FadeWorld({
 interface CeremonyRigProps {
   readonly chapter: ChapterConfig;
   readonly onSettled: (id: ChapterId) => void;
+  readonly intro: boolean;
 }
 
-function CeremonyRig({ chapter, onSettled }: CeremonyRigProps): JSX.Element {
+function CeremonyRig({ chapter, onSettled, intro }: CeremonyRigProps): JSX.Element {
   const { camera } = useThree();
 
   const keyLightRef = useRef<THREE.DirectionalLight>(null);
@@ -122,6 +160,10 @@ function CeremonyRig({ chapter, onSettled }: CeremonyRigProps): JSX.Element {
   const prevFade = useRef<number>(0);
   const prevChapterRef = useRef<ChapterConfig>(chapter);
 
+  // Armed once. The opening move belongs to the first mount only — coming back
+  // to the first chapter later is a chapter transition, not an entrance.
+  const introPending = useRef(true);
+
   // React to chapter changes: one GSAP timeline over camera + lights + the two
   // world fades. (Fog/background are set declaratively per chapter below.)
   useEffect(() => {
@@ -134,8 +176,15 @@ function CeremonyRig({ chapter, onSettled }: CeremonyRigProps): JSX.Element {
 
     activeTween.current?.kill();
 
+    const playIntro =
+      isFirst && introPending.current && intro && !prefersReducedMotion();
+    introPending.current = false;
+
     const tl = gsap.timeline({
-      defaults: { duration: chapter.transitionDuration, ease: "power2.inOut" },
+      defaults: {
+        duration: playIntro ? INTRO.duration : chapter.transitionDuration,
+        ease: "power2.inOut",
+      },
       onComplete: () => {
         prevFade.current = 0;
         setPrev(null);
@@ -145,29 +194,54 @@ function CeremonyRig({ chapter, onSettled }: CeremonyRigProps): JSX.Element {
     activeTween.current = tl;
 
     // Camera position + look target + fov.
-    tl.to(
-      cam.position,
-      {
-        x: chapter.camera.position[0],
-        y: chapter.camera.position[1],
-        z: chapter.camera.position[2],
-      },
-      0,
-    );
-    tl.to(
-      lookTarget.current,
-      {
-        x: chapter.camera.target[0],
-        y: chapter.camera.target[1],
-        z: chapter.camera.target[2],
-      },
-      0,
-    );
-    tl.to(
-      cam,
-      { fov: chapter.camera.fov, onUpdate: () => cam.updateProjectionMatrix() },
-      0,
-    );
+    //
+    // The entrance runs `.from()` rather than `.to()`: GSAP takes the start
+    // values from the tween declaration and ends wherever the object already
+    // sits, which on first mount is exactly the chapter's own framing. That is
+    // not only shorter than parking the camera by hand — it keeps the effect
+    // from reaching in and mutating the camera outside the tween at all, which
+    // the React compiler (rightly) rejects.
+    if (playIntro) {
+      tl.from(
+        cam.position,
+        { x: INTRO.position[0], y: INTRO.position[1], z: INTRO.position[2] },
+        0,
+      );
+      tl.from(
+        lookTarget.current,
+        { x: INTRO.target[0], y: INTRO.target[1], z: INTRO.target[2] },
+        0,
+      );
+      tl.from(
+        cam,
+        { fov: INTRO.fov, onUpdate: () => cam.updateProjectionMatrix() },
+        0,
+      );
+    } else {
+      tl.to(
+        cam.position,
+        {
+          x: chapter.camera.position[0],
+          y: chapter.camera.position[1],
+          z: chapter.camera.position[2],
+        },
+        0,
+      );
+      tl.to(
+        lookTarget.current,
+        {
+          x: chapter.camera.target[0],
+          y: chapter.camera.target[1],
+          z: chapter.camera.target[2],
+        },
+        0,
+      );
+      tl.to(
+        cam,
+        { fov: chapter.camera.fov, onUpdate: () => cam.updateProjectionMatrix() },
+        0,
+      );
+    }
 
     // Lights.
     if (keyLightRef.current) {
@@ -209,7 +283,7 @@ function CeremonyRig({ chapter, onSettled }: CeremonyRigProps): JSX.Element {
     return () => {
       tl.kill();
     };
-  }, [chapter, camera, onSettled]);
+  }, [chapter, camera, onSettled, intro]);
 
   // Per-frame: keep the camera aimed at the (tweened) look target.
   useFrame(() => {
@@ -279,6 +353,7 @@ export default function CeremonyCanvas({
   initialChapter = "proposal",
   onChapterChange,
   showControls = true,
+  intro = true,
   className,
 }: CeremonyCanvasProps): JSX.Element {
   const [chapterId, setChapterId] = useState<ChapterId>(initialChapter);
@@ -362,7 +437,7 @@ export default function CeremonyCanvas({
         }}
         dpr={[1, 2]}
       >
-        <CeremonyRig chapter={chapter} onSettled={handleSettled} />
+        <CeremonyRig chapter={chapter} onSettled={handleSettled} intro={intro} />
 
         {/* Bloom — only bright specular glints, emissive lanterns, and fire
             cross the luminance threshold, so the gold and flames actually glow. */}
@@ -378,6 +453,9 @@ export default function CeremonyCanvas({
 
       {/* Interactive Simulation Overlay — drives the Agent Mesh live. */}
       <SimulationOverlay chapterId={chapterId} />
+
+      {/* The invitation. Renders only on its own chapter. */}
+      <InvitationOverlay chapterId={chapterId} />
 
       {/* Ambient soundscape toggle (opt-in; also unlocks browser audio). */}
       <button

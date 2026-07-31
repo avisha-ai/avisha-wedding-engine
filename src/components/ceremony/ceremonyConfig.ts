@@ -70,6 +70,7 @@ export const PALETTE = {
   champagneGold: "#C8A24B",
   duskRose: "#8A2E4D",
   // Architectural material tones for the per-chapter worlds.
+  wisteriaLilac: "#9C7BC8",
   gladeMoss: "#2F5D46",
   twilightViolet: "#221C46",
   poolBlue: "#3E5C77",

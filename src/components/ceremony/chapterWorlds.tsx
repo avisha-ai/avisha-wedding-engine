@@ -30,9 +30,13 @@ import {
   createSmokeUniforms,
   createMossUniforms,
   createShaftUniforms,
+  createCrowdUniforms,
   createStageUniforms,
+  createSpineUniforms,
+  createWalnutUniforms,
+  createWisteriaUniforms,
   type ShaftUniforms,
-  type StageUniforms,
+  type StageRigUniforms,
   createWaterUniforms,
   createSilkUniforms,
   type CeremonyUniforms,
@@ -72,6 +76,8 @@ import {
   getEnvMap,
   getProposalMaterials,
   getSangeetMaterials,
+  getLibraryMaterials,
+  getWisteriaMaterials,
   getMehendiMaterials,
   getReceptionMaterials,
   getWeddingMaterials,
@@ -89,6 +95,24 @@ import {
   pavilionDomeGeometry,
   pavilionPlatformGeometry,
   reflectingPoolGeometry,
+  bookGeometry,
+  bookcaseGeometry,
+  guestSilhouetteGeometry,
+  hearthBoxGeometry,
+  hearthFlameGeometry,
+  hearthLogGeometry,
+  hearthSlabGeometry,
+  hearthSurroundGeometry,
+  libraryFloorGeometry,
+  libraryWallGeometry,
+  mantelGeometry,
+  shelveBooks,
+  scatterOnRing,
+  wisteriaFootingGeometry,
+  wisteriaPostGeometry,
+  wisteriaRacemeGeometry,
+  wisteriaRacemePlacements,
+  wisteriaSpanGeometry,
   stageBeamGeometry,
   stageFloorGeometry,
   stageLampGeometry,
@@ -115,6 +139,12 @@ import {
   GLADE_RADIUS,
   GLADE_RING_COUNT,
   GLADE_RING_RADIUS,
+  GUEST_HEIGHT,
+  HEARTH_FIRE_Y,
+  HEARTH_FIRE_Z,
+  HEARTH_OPENING_H,
+  LIBRARY_WALL_Z,
+  WISTERIA_HALF_SPAN,
   STAGE_FLOOR_Y,
   STAGE_RIG_COUNT,
   STAGE_RIG_HEIGHT,
@@ -438,6 +468,7 @@ const GLADE_TOADSTOOLS: readonly Placement[] = [
  */
 interface GladeShaders {
   readonly moss: THREE.ShaderMaterial;
+  readonly wisteria: THREE.ShaderMaterial;
   readonly bellflower: THREE.ShaderMaterial;
   readonly starflower: THREE.ShaderMaterial;
   readonly crystal: THREE.ShaderMaterial;
@@ -450,7 +481,12 @@ interface GladeShaders {
 
 function buildGladeShaders(chapter: ChapterConfig): GladeShaders {
   const program = (
-    name: "mossCarpet" | "wildflower" | "crystalFacet" | "lightShaft",
+    name:
+      | "mossCarpet"
+      | "wildflower"
+      | "crystalFacet"
+      | "lightShaft"
+      | "wisteriaBloom",
     uniforms: CeremonyUniforms,
     extra?: Partial<THREE.ShaderMaterialParameters>,
   ): THREE.ShaderMaterial => {
@@ -483,6 +519,7 @@ function buildGladeShaders(chapter: ChapterConfig): GladeShaders {
     return u;
   };
 
+  const wisteriaUniforms = createWisteriaUniforms();
   const mossUniforms = bindRing(createMossUniforms());
   mossUniforms.uGladeRadius.value = GLADE_RADIUS;
   const bellUniforms = bindRing(createFlowerUniforms());
@@ -500,6 +537,11 @@ function buildGladeShaders(chapter: ChapterConfig): GladeShaders {
   starUniforms.uBloomGlow.value = 1.35;
 
   const moss = program("mossCarpet", mossUniforms);
+  // Racemes are seen from inside as well as out, and the floret cutout means
+  // every fragment is a real edge — so both faces have to be shaded.
+  const wisteria = program("wisteriaBloom", wisteriaUniforms, {
+    side: THREE.DoubleSide,
+  });
   const bellflower = program("wildflower", bellUniforms, {
     side: THREE.DoubleSide,
   });
@@ -527,12 +569,14 @@ function buildGladeShaders(chapter: ChapterConfig): GladeShaders {
 
   return {
     moss,
+    wisteria,
     bellflower,
     starflower,
     crystal,
     shaft,
     timed: [
       mossUniforms,
+      wisteriaUniforms,
       bellUniforms,
       starUniforms,
       crystalUniforms,
@@ -552,6 +596,80 @@ function getGladeShaders(chapter: ChapterConfig): GladeShaders {
     gladeShaderCache.set(chapter.id, set);
   }
   return set;
+}
+
+/**
+ * The wisteria entrance arch — the venue's threshold, and what the opening
+ * camera move descends through.
+ *
+ * It stands on the bearing the chapter's camera settles on, so the arch always
+ * frames the shot: derived from `chapter.camera.position` rather than hardcoded,
+ * which keeps the two in step if the framing is ever retuned. It sits outside
+ * the glade proper, on its own footings, as an arch on the approach path.
+ */
+// Far enough from the settled camera that a raceme reads at a natural size:
+// closer in, the floret cutout resolves into blotches the size of a fist.
+const WISTERIA_ARCH_RADIUS = 5.6;
+
+function WisteriaArch({ chapter }: WorldProps): JSX.Element {
+  const renderer = useThree((state) => state.gl);
+  const env = useMemo(() => getEnvMap(renderer, "warm"), [renderer]);
+  const materials = useMemo(() => getWisteriaMaterials(chapter, env), [chapter, env]);
+  const shaders = useMemo(() => getGladeShaders(chapter), [chapter]);
+
+  const racemes = useMemo(() => wisteriaRacemePlacements(), []);
+
+  // Stand the arch square across the camera's approach.
+  const { position, rotationY } = useMemo(() => {
+    const [cx, , cz] = chapter.camera.position;
+    const bearing = Math.atan2(cz, cx);
+    return {
+      position: [
+        Math.cos(bearing) * WISTERIA_ARCH_RADIUS,
+        0,
+        Math.sin(bearing) * WISTERIA_ARCH_RADIUS,
+      ] as [number, number, number],
+      rotationY: Math.PI / 2 - bearing,
+    };
+  }, [chapter.camera.position]);
+
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {[-WISTERIA_HALF_SPAN, WISTERIA_HALF_SPAN].map((x) => (
+        <group key={x}>
+          <Part
+            geometry={wisteriaFootingGeometry()}
+            material={materials.stone}
+            position={[x, 0.05, 0]}
+          />
+          <Part
+            geometry={wisteriaPostGeometry()}
+            material={materials.timber}
+            position={[x, 0.14, 0]}
+          />
+        </group>
+      ))}
+
+      <Part
+        geometry={wisteriaSpanGeometry()}
+        material={materials.timber}
+        position={[0, 0.14, 0]}
+      />
+
+      {/* The blossom. Kept out of the shadow pass — the fragment cutout is
+          invisible to the depth pass, so a raceme that cast would drop a solid
+          block of shade instead of dapple. */}
+      <group position={[0, 0.14, 0]}>
+        <InstancedPart
+          geometry={wisteriaRacemeGeometry()}
+          material={shaders.wisteria}
+          placements={racemes}
+          castShadow={false}
+          receiveShadow={false}
+        />
+      </group>
+    </group>
+  );
 }
 
 function ProposalWorld({ chapter }: WorldProps): JSX.Element {
@@ -701,6 +819,9 @@ function ProposalWorld({ chapter }: WorldProps): JSX.Element {
           decay={2}
         />
       </group>
+
+      {/* The entrance arch, out on the approach path. */}
+      <WisteriaArch chapter={chapter} />
 
       {/* The centre lantern's own shaft, anchored to the ground rather than to
           the bobbing group so the beam stays planted. */}
@@ -1411,6 +1532,39 @@ const STAGE_TIERS: readonly Placement[] = [3.05, 3.6, 4.15, 4.7].map(
   }),
 );
 
+/**
+ * The crowd, one band per tier.
+ *
+ * Each band sits on its tier's top annulus — the tier profile runs from radius
+ * R out at the wall to 0.93R at the inner lip, with the walking surface at
+ * y + 0.36 — so the figures stand on the step rather than floating over it.
+ * Counts scale with circumference, which keeps the spacing even as the tiers
+ * widen.
+ */
+const STAGE_TIER_TOP_Y = 0.36;
+
+const CROWD: readonly Placement[] = STAGE_TIERS.flatMap((tier, i) => {
+  // The innermost tier is left empty. Figures there stand directly against the
+  // stage lip and, from the chapter's own camera, wall the performance off
+  // entirely — the crowd is meant to frame the stage, not replace it.
+  if (i === 0) return [];
+
+  const radius = (tier.scale as readonly [number, number, number])[0];
+  const y = (tier.position as readonly [number, number, number])[1];
+
+  return scatterOnRing({
+    // ~1 guest per 1.5 units of circumference. Sparse enough that the tiers and
+    // the stage still read between them.
+    count: Math.round((Math.PI * 2 * radius) / 1.5),
+    innerRadius: radius * 0.935,
+    outerRadius: radius * 0.995,
+    y: y + STAGE_TIER_TOP_Y,
+    seed: 900 + i * 37,
+    minScale: 0.58,
+    maxScale: 0.74,
+  });
+});
+
 /** Rig fixtures. Aim is baked into the geometry, so these only turn. */
 const STAGE_RIG: readonly Placement[] = Array.from(
   { length: STAGE_RIG_COUNT },
@@ -1437,20 +1591,21 @@ const STAGE_BEAMS_COOL: readonly Placement[] = STAGE_RIG.filter(
  */
 interface StageShaders {
   readonly tier: THREE.ShaderMaterial;
+  readonly crowd: THREE.ShaderMaterial;
   readonly floor: THREE.ShaderMaterial;
   readonly truss: THREE.ShaderMaterial;
   readonly beamWarm: THREE.ShaderMaterial;
   readonly beamCool: THREE.ShaderMaterial;
   readonly timed: readonly CeremonyUniforms[];
   /** Every set carrying the rig, so the sweep stays in lockstep. */
-  readonly rigged: readonly StageUniforms[];
+  readonly rigged: readonly StageRigUniforms[];
 }
 
 function buildStageShaders(chapter: ChapterConfig): StageShaders {
   const gain = chapter.lighting.keyIntensity;
 
   const program = (
-    name: "stagePolish" | "lightShaft",
+    name: "stagePolish" | "lightShaft" | "guestSilhouette",
     uniforms: CeremonyUniforms,
     extra?: Partial<THREE.ShaderMaterialParameters>,
   ): THREE.ShaderMaterial => {
@@ -1468,7 +1623,7 @@ function buildStageShaders(chapter: ChapterConfig): StageShaders {
     });
   };
 
-  const stage = (polish: number, facet: number): StageUniforms => {
+  const stage = (polish: number, facet: number) => {
     const u = createStageUniforms();
     u.uRigRadius.value = STAGE_RIG_RADIUS;
     u.uRigCount.value = STAGE_RIG_COUNT;
@@ -1486,6 +1641,14 @@ function buildStageShaders(chapter: ChapterConfig): StageShaders {
   const tier = program("stagePolish", tierUniforms);
   const floor = program("stagePolish", floorUniforms);
   const truss = program("stagePolish", trussUniforms);
+
+  const crowdUniforms = createCrowdUniforms();
+  crowdUniforms.uHeight.value = GUEST_HEIGHT;
+  crowdUniforms.uRigRadius.value = STAGE_RIG_RADIUS;
+  crowdUniforms.uRigCount.value = STAGE_RIG_COUNT;
+  crowdUniforms.uRigHeight.value = STAGE_RIG_HEIGHT;
+  crowdUniforms.uRigAimY.value = STAGE_FLOOR_Y;
+  const crowd = program("guestSilhouette", crowdUniforms);
 
   /**
    * A gelled beam. The tint has to be written *after* the program is built,
@@ -1518,18 +1681,20 @@ function buildStageShaders(chapter: ChapterConfig): StageShaders {
 
   return {
     tier,
+    crowd,
     floor,
     truss,
     beamWarm,
     beamCool,
     timed: [
       tierUniforms,
+      crowdUniforms,
       floorUniforms,
       trussUniforms,
       warmUniforms,
       coolUniforms,
     ],
-    rigged: [tierUniforms, floorUniforms, trussUniforms],
+    rigged: [tierUniforms, floorUniforms, trussUniforms, crowdUniforms],
   };
 }
 
@@ -1595,6 +1760,16 @@ function SangeetWorld({ chapter }: WorldProps): JSX.Element {
         geometry={stageTierGeometry()}
         material={shaders.tier}
         placements={STAGE_TIERS}
+      />
+
+      {/* The crowd. One instanced draw call for every guest in the house; the
+          rig is what lights them, so they stay out of the shadow pass. */}
+      <InstancedPart
+        geometry={guestSilhouetteGeometry()}
+        material={shaders.crowd}
+        placements={CROWD}
+        castShadow={false}
+        receiveShadow={false}
       />
 
       {/* The rig: truss, fixtures and their beams, all turning together. */}
@@ -2090,77 +2265,305 @@ function ConservatoryWorld({ chapter }: WorldProps): JSX.Element {
 }
 
 // -----------------------------------------------------------------------------
-// 7 — Legacy: intimate estate library hearth
+// 7 — Legacy: the estate library, lit by its own hearth
 // -----------------------------------------------------------------------------
 
-function LibraryHearthWorld({ chapter }: WorldProps): JSX.Element {
-  const { primary, secondary, emissive } = chapter.palette;
-  const fireRef = useRef<THREE.Mesh>(null);
-  const t = useRef(0);
+/** Where the two bookcases stand, flanking the chimney breast. */
+const BOOKCASE_X = 2.05;
+
+const LIBRARY_BOOKCASES: readonly Placement[] = [-BOOKCASE_X, BOOKCASE_X].map(
+  (x) => ({ position: [x, 0, LIBRARY_WALL_Z + 0.36] as const }),
+);
+
+/**
+ * Books, shelved per bookcase and then lifted into world space.
+ *
+ * Each case is shelved from its own seed, so the two do not mirror each other —
+ * which they visibly would if one placement set were reused for both.
+ */
+const LIBRARY_BOOKS: readonly Placement[] = [-BOOKCASE_X, BOOKCASE_X].flatMap(
+  (x, i) =>
+    shelveBooks(1200 + i * 53).map((book) => ({
+      ...book,
+      position: [
+        book.position[0] + x,
+        book.position[1],
+        book.position[2] + LIBRARY_WALL_Z + 0.36,
+      ] as const,
+    })),
+);
+
+/** Logs banked on the grate. */
+const HEARTH_LOGS: readonly Placement[] = [
+  { position: [0.0, 0.1, 0.0], rotation: [0, 0.12, 0], scale: [1, 1, 1] },
+  { position: [-0.04, 0.16, -0.09], rotation: [0, -0.3, 0.1], scale: [0.85, 0.9, 0.85] },
+  { position: [0.07, 0.17, 0.07], rotation: [0, 0.42, -0.08], scale: [0.9, 0.85, 0.9] },
+];
+
+/** Embers strewn under the logs. */
+const HEARTH_COALS: readonly Placement[] = [
+  { position: [0.0, 0.06, 0.0], scale: 1.3 },
+  { position: [-0.16, 0.05, 0.05], scale: 0.9 },
+  { position: [0.18, 0.05, -0.04], scale: 1.05 },
+  { position: [-0.08, 0.06, -0.1], scale: 0.75 },
+  { position: [0.09, 0.05, 0.12], scale: 0.95 },
+  { position: [0.26, 0.05, 0.06], scale: 0.7 },
+  { position: [-0.28, 0.05, -0.03], scale: 0.8 },
+];
+
+/** Offset, scale and beat of each flame body across the fire bed. */
+const HEARTH_FLAMES = [
+  { x: -0.22, z: 0.0, scale: 0.42, rate: 5.1, phase: 0.0 },
+  { x: -0.05, z: 0.05, scale: 0.58, rate: 6.3, phase: 1.4 },
+  { x: 0.13, z: -0.03, scale: 0.5, rate: 7.2, phase: 2.9 },
+  { x: 0.29, z: 0.04, scale: 0.36, rate: 8.4, phase: 4.1 },
+] as const;
+
+/** Peak intensity of the hearth light, before flicker and world fade. */
+const HEARTH_LIGHT_INTENSITY = 6.2;
+
+/** World position of the fire — what the walnut and the bindings are lit by. */
+const HEARTH_WORLD: readonly [number, number, number] = [
+  0,
+  HEARTH_FIRE_Y + 0.28,
+  HEARTH_FIRE_Z,
+];
+
+/**
+ * The library's hand-authored materials: the walnut, the book bindings, and the
+ * fire. All three are lit by the hearth rather than by the scene, so all three
+ * take its position and pulse.
+ */
+interface LibraryShaders {
+  readonly walnut: THREE.ShaderMaterial;
+  readonly spine: THREE.ShaderMaterial;
+  readonly flame: THREE.ShaderMaterial;
+  readonly coal: THREE.ShaderMaterial;
+  readonly timed: readonly CeremonyUniforms[];
+  /** Every set taking the firelight, so the whole room flickers together. */
+  readonly hearthLit: readonly { uHearthPulse: { value: number } }[];
+}
+
+function buildLibraryShaders(chapter: ChapterConfig): LibraryShaders {
+  const program = (
+    name: "walnutWood" | "leatherSpine" | "sacredFire" | "ember",
+    uniforms: CeremonyUniforms,
+    extra?: Partial<THREE.ShaderMaterialParameters>,
+  ): THREE.ShaderMaterial => {
+    applyChapterUniforms(uniforms, chapter);
+    const gain = chapter.lighting.keyIntensity;
+    const [lr, lg, lb] = uniforms.uLightColor.value;
+    uniforms.uLightColor.value = [lr * gain, lg * gain, lb * gain];
+
+    const source = CEREMONY_SHADERS[name];
+    return new THREE.ShaderMaterial({
+      vertexShader: source.vertexShader,
+      fragmentShader: source.fragmentShader,
+      uniforms: asUniformMap(uniforms),
+      transparent: true,
+      ...extra,
+    });
+  };
+
+  const walnutUniforms = createWalnutUniforms();
+  walnutUniforms.uHearthPos.value = [...HEARTH_WORLD];
+
+  const spineUniforms = createSpineUniforms();
+  spineUniforms.uHearthPos.value = [...HEARTH_WORLD];
+
+  // The kund's fire program, re-tuned. A log fire is lazier and less hungry
+  // than a sacred fire, so it whips less and burns cooler up the column.
+  const flameUniforms = createFireUniforms();
+  flameUniforms.uTurbulence.value = 0.022;
+  flameUniforms.uRise.value = 1.9;
+  flameUniforms.uCore.value = 0.92;
+
+  const coalUniforms = createCeremonyUniforms();
+
+  const walnut = program("walnutWood", walnutUniforms);
+  const spine = program("leatherSpine", spineUniforms);
+  const coal = program("ember", coalUniforms);
+
+  const flame = program("sacredFire", flameUniforms, {
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  flame.userData.baseOpacity = 0.9;
+
+  return {
+    walnut,
+    spine,
+    flame,
+    coal,
+    timed: [walnutUniforms, spineUniforms, flameUniforms, coalUniforms],
+    hearthLit: [walnutUniforms, spineUniforms],
+  };
+}
+
+const libraryShaderCache = new Map<ChapterId, LibraryShaders>();
+
+/** Cached per chapter and never disposed — see {@link getMehendiShaders}. */
+function getLibraryShaders(chapter: ChapterConfig): LibraryShaders {
+  let set = libraryShaderCache.get(chapter.id);
+  if (!set) {
+    set = buildLibraryShaders(chapter);
+    libraryShaderCache.set(chapter.id, set);
+  }
+  return set;
+}
+
+function LegacyLibraryWorld({ chapter }: WorldProps): JSX.Element {
+  const renderer = useThree((state) => state.gl);
+  const env = useMemo(() => getEnvMap(renderer, "warm"), [renderer]);
+  const materials = useMemo(() => getLibraryMaterials(chapter, env), [chapter, env]);
+  const shaders = useMemo(() => getLibraryShaders(chapter), [chapter]);
+
+  const flameRefs = useRef<(THREE.Group | null)[]>([]);
+  const fireLightRef = useRef<THREE.PointLight>(null);
+  const clock = useRef(0);
 
   useFrame((_state, delta) => {
-    t.current += delta;
-    if (fireRef.current) {
-      const mat = fireRef.current.material as THREE.MeshStandardMaterial;
-      mat.emissiveIntensity =
-        1.8 + Math.sin(t.current * 7.0) * 0.5 + Math.sin(t.current * 13.0) * 0.3;
+    clock.current += delta;
+    const t = clock.current;
+
+    const live = getLibraryShaders(chapter);
+    const surfaces = getLibraryMaterials(chapter, env);
+
+    for (const uniforms of live.timed) uniforms.uTime.value = t;
+
+    // Three incommensurate rates, so the room never settles into a period.
+    const pulse =
+      0.78 +
+      Math.sin(t * 3.9) * 0.13 +
+      Math.sin(t * 7.1 + 1.7) * 0.07 +
+      Math.sin(t * 13.3 + 0.4) * 0.03;
+
+    for (const uniforms of live.hearthLit) uniforms.uHearthPulse.value = pulse;
+
+    // `applyWorldFade` writes uOpacity every frame, so this is a free read of
+    // the world's presence — and the light has to be scaled by it by hand,
+    // since the fade helper only walks materials.
+    const presence = live.timed[0].uOpacity.value;
+    if (fireLightRef.current) {
+      fireLightRef.current.intensity = HEARTH_LIGHT_INTENSITY * pulse * presence;
+    }
+    surfaces.log.emissiveIntensity = 0.3 + pulse * 0.8;
+
+    for (let i = 0; i < HEARTH_FLAMES.length; i++) {
+      const group = flameRefs.current[i];
+      if (!group) continue;
+      const flame = HEARTH_FLAMES[i];
+      const beat = Math.sin(t * flame.rate + flame.phase);
+      const flicker = Math.sin(t * flame.rate * 2.3 + flame.phase) * 0.07;
+      group.scale.set(
+        flame.scale * (1 + flicker * 0.5),
+        flame.scale * (0.84 + Math.abs(beat) * 0.34 + flicker),
+        flame.scale * (1 + flicker * 0.5),
+      );
+      group.rotation.y = beat * 0.16;
     }
   });
 
-  const bookColors = [secondary, primary, chapter.palette.emissive, "#4A5568"];
-
   return (
-    <group position={[0, 0, 0]}>
-      {/* Back wall */}
-      <mesh position={[0, 1.2, -1.0]}>
-        <boxGeometry args={[4.0, 2.4, 0.2]} />
-        <meshStandardMaterial color={primary} roughness={0.85} transparent opacity={0.9} />
-      </mesh>
-      {/* Fireplace surround */}
-      <mesh position={[0, 0.7, -0.85]}>
-        <boxGeometry args={[1.6, 1.4, 0.3]} />
-        <meshStandardMaterial color={secondary} roughness={0.6} transparent />
-      </mesh>
-      {/* Hearth opening (dark) */}
-      <mesh position={[0, 0.55, -0.75]}>
-        <boxGeometry args={[1.0, 0.9, 0.25]} />
-        <meshStandardMaterial color={chapter.palette.background} transparent />
-      </mesh>
-      {/* Mantel */}
-      <mesh position={[0, 1.5, -0.8]}>
-        <boxGeometry args={[2.0, 0.16, 0.5]} />
-        <GoldMaterial chapter={chapter} />
-      </mesh>
-      {/* Fire */}
-      <mesh ref={fireRef} position={[0, 0.45, -0.72]}>
-        <coneGeometry args={[0.3, 0.7, 6]} />
-        <meshStandardMaterial
-          color={emissive}
-          emissive={emissive}
-          emissiveIntensity={2.0}
-          transparent
-          opacity={0.92}
+    <group>
+      <Part
+        geometry={libraryFloorGeometry()}
+        material={shaders.walnut}
+        position={[0, -0.06, 0]}
+        castShadow={false}
+      />
+      <Part
+        geometry={libraryWallGeometry()}
+        material={materials.brick}
+        position={[0, 2.2, LIBRARY_WALL_Z]}
+      />
+
+      {/* The hearth: firebox, brick surround, stone slab and walnut mantel. */}
+      <Part
+        geometry={hearthBoxGeometry()}
+        material={materials.firebox}
+        position={[0, HEARTH_OPENING_H / 2, LIBRARY_WALL_Z + 0.16]}
+        castShadow={false}
+      />
+      <Part
+        geometry={hearthSurroundGeometry()}
+        material={materials.brick}
+        position={[0, 0, LIBRARY_WALL_Z + 0.42]}
+      />
+      <Part
+        geometry={hearthSlabGeometry()}
+        material={materials.hearthStone}
+        position={[0, 0.045, LIBRARY_WALL_Z + 0.95]}
+        castShadow={false}
+      />
+      <Part
+        geometry={mantelGeometry()}
+        material={shaders.walnut}
+        position={[0, HEARTH_OPENING_H + 0.4, LIBRARY_WALL_Z + 0.46]}
+      />
+
+      {/* Two bookcases, and every volume on them in one instanced call. */}
+      <InstancedPart
+        geometry={bookcaseGeometry()}
+        material={shaders.walnut}
+        placements={LIBRARY_BOOKCASES}
+      />
+      <InstancedPart
+        geometry={bookGeometry()}
+        material={shaders.spine}
+        placements={LIBRARY_BOOKS}
+        castShadow={false}
+      />
+
+      {/* The fire. Logs and coals sit in the box; the flames are the kund's
+          program re-tuned for a lazier log fire. */}
+      <group position={[0, HEARTH_FIRE_Y, HEARTH_FIRE_Z]}>
+        <InstancedPart
+          geometry={hearthLogGeometry()}
+          material={materials.log}
+          placements={HEARTH_LOGS}
+          castShadow={false}
         />
-      </mesh>
-      {/* Bookshelves flanking */}
-      {[-1.5, 1.5].map((x) => (
-        <group key={x} position={[x, 1.0, -0.9]}>
-          <mesh>
-            <boxGeometry args={[0.7, 2.0, 0.3]} />
-            <meshStandardMaterial color={secondary} roughness={0.8} transparent />
-          </mesh>
-          {Array.from({ length: 5 }).map((_, r) => (
-            <mesh key={r} position={[0, -0.8 + r * 0.4, 0.08]}>
-              <boxGeometry args={[0.6, 0.28, 0.18]} />
-              <meshStandardMaterial
-                color={bookColors[r % bookColors.length]}
-                roughness={0.9}
-                transparent
-              />
-            </mesh>
-          ))}
-        </group>
-      ))}
+        <InstancedPart
+          geometry={emberGeometry()}
+          material={shaders.coal}
+          placements={HEARTH_COALS}
+          castShadow={false}
+        />
+
+        {HEARTH_FLAMES.map((flame, i) => (
+          <group
+            key={i}
+            ref={(node) => {
+              flameRefs.current[i] = node;
+            }}
+            position={[flame.x, 0.08, flame.z]}
+          >
+            <mesh
+              geometry={hearthFlameGeometry()}
+              material={shaders.flame}
+              castShadow={false}
+              receiveShadow={false}
+              renderOrder={3}
+              userData={{ castsShadow: false }}
+              dispose={null}
+            />
+          </group>
+        ))}
+
+        {/* The light the whole room is lit by. It does not cast — the key is
+            the only shadow caster in this engine, and a second one here would
+            double the depth pass for a room that is mostly dark anyway. */}
+        <pointLight
+          ref={fireLightRef}
+          position={[0, 0.28, 0.1]}
+          color={chapter.palette.emissive}
+          intensity={HEARTH_LIGHT_INTENSITY}
+          distance={9}
+          decay={2}
+        />
+      </group>
     </group>
   );
 }
@@ -2176,7 +2579,7 @@ const WORLD_BY_ID: Record<ChapterId, (props: WorldProps) => JSX.Element> = {
   sangeet: SangeetWorld,
   wedding: HavanKundWorld,
   reception: ConservatoryWorld,
-  legacy: LibraryHearthWorld,
+  legacy: LegacyLibraryWorld,
 };
 
 /** Renders the structural world for a given chapter. */

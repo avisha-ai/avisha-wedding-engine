@@ -231,6 +231,76 @@ export interface FlowerUniforms extends CeremonyUniforms, GladeRingUniforms {
   readonly uBloomGlow: Uniform<number>;
 }
 
+/** Extra uniforms for {@link CEREMONY_SHADERS.wisteriaBloom}. */
+export interface WisteriaUniforms extends CeremonyUniforms {
+  /** Peak sway at the tip of a raceme, in world units. */
+  readonly uSway: Uniform<number>;
+  /** Colour at the crown of a raceme, where the florets are newest. */
+  readonly uPetalTop: Uniform<Vec3>;
+  /** Colour at the tip, where they have opened and paled. */
+  readonly uPetalTip: Uniform<Vec3>;
+}
+
+/** Fresh wisteria uniform set. */
+export function createWisteriaUniforms(): WisteriaUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uSway: { value: 0.05 },
+    uPetalTop: { value: [0.26, 0.17, 0.42] },
+    uPetalTip: { value: [0.5, 0.42, 0.66] },
+  };
+}
+
+/**
+ * Extra uniforms for {@link CEREMONY_SHADERS.guestSilhouette}.
+ *
+ * Carries the rig ({@link StageRigUniforms}) because the crowd is lit *by* it:
+ * the rim has to know where the lamps actually are, so it sweeps across the
+ * house as they turn instead of outlining every figure evenly.
+ */
+export interface CrowdUniforms extends CeremonyUniforms, StageRigUniforms {
+  /** Height of a figure in local units, for normalising the body gradient. */
+  readonly uHeight: Uniform<number>;
+  /** Cool half of the rim — the lavender. */
+  readonly uRimCool: Uniform<Vec3>;
+  /** Warm half of the rim — the gold. */
+  readonly uRimWarm: Uniform<Vec3>;
+  /** Rim gain. Pushed just over the bloom threshold so the crowd glows softly. */
+  readonly uRimGain: Uniform<number>;
+  /** Peak idle sway at the head, in world units. */
+  readonly uSway: Uniform<number>;
+  /** Peak breath swell through the chest, in world units. */
+  readonly uBreath: Uniform<number>;
+  /**
+   * How much light carries *through* a figure. Guests are drawn opaque — forty
+   * of them share one instanced draw call, and instances within a call cannot
+   * be depth-sorted, so genuine alpha would blend them in arbitrary order
+   * wherever they overlap. This is the translucency read without that cost: a
+   * transmission term that lifts the thin edges when a lamp is behind them.
+   */
+  readonly uTransmit: Uniform<number>;
+}
+
+/** Fresh crowd uniform set. */
+export function createCrowdUniforms(): CrowdUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uRigRadius: { value: 3.2 },
+    uRigCount: { value: 10 },
+    uRigHeight: { value: 4.3 },
+    uRigSpin: { value: 0 },
+    uRigPulse: { value: 1 },
+    uRigAimY: { value: 0.3 },
+    uHeight: { value: 1.55 },
+    uRimCool: { value: [0.61, 0.48, 0.78] },
+    uRimWarm: { value: [0.78, 0.63, 0.29] },
+    uRimGain: { value: 1.0 },
+    uSway: { value: 0.035 },
+    uBreath: { value: 0.012 },
+    uTransmit: { value: 1.0 },
+  };
+}
+
 /**
  * The sangeet's overhead rig, as seen by the stage surfaces.
  *
@@ -272,6 +342,50 @@ export function createStageUniforms(): StageUniforms {
     uRigAimY: { value: 0.3 },
     uPolish: { value: 0 },
     uFacetScale: { value: 3.4 },
+  };
+}
+
+/**
+ * Extra uniforms for {@link CEREMONY_SHADERS.walnutWood}.
+ *
+ * The library is lit almost entirely by its own hearth, and a `ShaderMaterial`
+ * sees no scene lights — so the fire arrives as a world position and a pulse,
+ * the same contract the mehendi silk uses for its brazier.
+ */
+export interface WalnutUniforms extends CeremonyUniforms {
+  /** Growth-ring frequency. Higher = tighter, older timber. */
+  readonly uRingScale: Uniform<number>;
+  /** Satin sheen gain on the polished faces. */
+  readonly uSheen: Uniform<number>;
+  /** World position of the hearth fire. */
+  readonly uHearthPos: Uniform<Vec3>;
+  /** Firelight brightness, `0..~1`. Driven per-frame to flicker. */
+  readonly uHearthPulse: Uniform<number>;
+}
+
+/** Fresh walnut uniform set. */
+export function createWalnutUniforms(): WalnutUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uRingScale: { value: 5.5 },
+    uSheen: { value: 1.0 },
+    uHearthPos: { value: [0, 0.5, -0.7] },
+    uHearthPulse: { value: 1 },
+  };
+}
+
+/** Extra uniforms for {@link CEREMONY_SHADERS.leatherSpine}. */
+export interface SpineUniforms extends CeremonyUniforms {
+  readonly uHearthPos: Uniform<Vec3>;
+  readonly uHearthPulse: Uniform<number>;
+}
+
+/** Fresh book-spine uniform set. */
+export function createSpineUniforms(): SpineUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uHearthPos: { value: [0, 0.5, -0.7] },
+    uHearthPulse: { value: 1 },
   };
 }
 
@@ -1218,7 +1332,10 @@ const WILDFLOWER_FRAGMENT = /* glsl */ `
     // above it. See FLOWER_BLOOM_V in proceduralAssets.
     float bloom = smoothstep(0.70, 0.80, vStem);
 
-    float key = clamp((dot(N, L) + 0.55) / 1.55, 0.0, 1.0);
+    // Absolute facing, not signed. The cluster is open enough to see straight
+    // through, so its back faces are lit blossom too — shading them as though
+    // they were turned away mottles every raceme with grey patches.
+    float key = clamp((abs(dot(N, L)) + 0.5) / 1.5, 0.0, 1.0);
     // Petals are thin: light comes through the far side almost as well.
     float through = pow(clamp(dot(V, -normalize(L + N * 0.4)), 0.0, 1.0), 2.4);
 
@@ -1538,7 +1655,8 @@ const MIRROR_WATER_FRAGMENT = /* glsl */ `
 `;
 
 // -----------------------------------------------------------------------------
-// Sangeet — the amphitheatre
+// Shared: the sangeet's overhead rig
+// (declared here because the crowd is lit by it as well as the stage)
 // -----------------------------------------------------------------------------
 
 /**
@@ -1553,18 +1671,30 @@ const STAGE_RIG_LIGHT = /* glsl */ `
   uniform float uRigPulse;
   uniform float uRigAimY;
 
-  vec3 rigLight(vec3 worldPos) {
+  /** Index of the lamp nearest this point in azimuth. */
+  float nearestLampIndex(vec3 worldPos) {
     float sector = 6.2831853 / max(uRigCount, 1.0);
     float raw = atan(worldPos.z, worldPos.x) - uRigSpin;
+    return floor((raw + sector * 0.5) / sector);
+  }
 
-    // Which lamp is nearest in azimuth, and where it actually hangs.
-    float index = floor((raw + sector * 0.5) / sector);
-    float lampAngle = index * sector + uRigSpin;
-    vec3 lamp = vec3(
+  /** Where that lamp actually hangs. */
+  vec3 nearestLamp(vec3 worldPos) {
+    float sector = 6.2831853 / max(uRigCount, 1.0);
+    float lampAngle = nearestLampIndex(worldPos) * sector + uRigSpin;
+    return vec3(
       cos(lampAngle) * uRigRadius,
       uRigHeight,
       sin(lampAngle) * uRigRadius
     );
+  }
+
+  vec3 rigLight(vec3 worldPos) {
+    float sector = 6.2831853 / max(uRigCount, 1.0);
+    float raw = atan(worldPos.z, worldPos.x) - uRigSpin;
+
+    float index = nearestLampIndex(worldPos);
+    vec3 lamp = nearestLamp(worldPos);
 
     // A focused lamp falls off around its *beam axis*, not around the azimuth
     // it happens to sit at. Folding on the angle instead carves the stage into
@@ -1580,6 +1710,271 @@ const STAGE_RIG_LIGHT = /* glsl */ `
     return vec3(uRigPulse * focus / (1.0 + d * d * 0.16), index, d);
   }
 `;
+
+
+// -----------------------------------------------------------------------------
+// Production layer — wisteria and the crowd
+// -----------------------------------------------------------------------------
+
+/**
+ * Vertex stage for the hanging wisteria.
+ *
+ * Racemes are authored hanging from their attachment point, with `uv.y` 0 at
+ * the crown and 1 at the tip, so the sway envelope reads off the UVs: pinned
+ * where it is tied to the bough, free at the tip.
+ */
+const WISTERIA_VERTEX = /* glsl */ `
+  precision highp float;
+
+  uniform float uTime;
+  uniform float uSway;
+
+  varying vec2  vUv;
+  varying vec3  vWorldNormal;
+  varying vec3  vWorldPos;
+  varying vec3  vLocalPos;
+  varying float vDrop;
+
+  ${INSTANCED_MODEL_MATRIX}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    float drop = clamp(uv.y, 0.0, 1.0);
+    vDrop = drop;
+
+    mat4 M = instancedModelMatrix();
+    vec4 world = M * vec4(position, 1.0);
+
+    // Phase from where the raceme is tied on, so a whole arch of them ripples
+    // rather than swinging as one block — and with no per-instance attribute.
+    vec3 root = vec3(M[3][0], M[3][1], M[3][2]);
+    float amp = drop * drop * uSway;
+
+    world.x += sin(uTime * 0.9 + root.x * 2.1 + root.z * 1.4) * amp;
+    world.z += sin(uTime * 0.7 + root.z * 2.6 - root.x * 1.1) * amp * 0.8;
+
+    vWorldPos = world.xyz;
+    vWorldNormal = normalize(mat3(M) * normal);
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * Blooming wisteria.
+ *
+ * A raceme is not a surface, it is a few dozen pea-flowers strung down a stem,
+ * so the shading is built from a floret field rather than from the geometry:
+ * two crossed high-frequency trains break the cluster into individual blooms,
+ * and the gaps between them are driven to nothing and discarded, which is what
+ * gives the cluster an airy, see-through edge instead of a solid cone.
+ *
+ * The colour runs down the raceme — deep lilac at the crown where the buds are
+ * still closed, paling toward warm white at the tip where they have opened.
+ * That gradient is the whole reason wisteria reads as wisteria.
+ */
+const WISTERIA_BLOOM_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform vec3 uPetalTop;
+  uniform vec3 uPetalTip;
+
+  varying vec3  vLocalPos;
+  varying float vDrop;
+
+  ${VALUE_NOISE_3D}
+
+  void main() {
+    // Florets, from noise rather than from crossed sines. A sine lattice laid
+    // over a tapered lathe lines its nodes up with the taper and reads as
+    // herringbone banding — which is exactly what this looked like first.
+    // A raceme is only about a fifth of a unit across, so these frequencies are
+    // what set the size of a single pea-flower. Too fine and the cutout below
+    // shreds the cluster into speckle rather than opening gaps between blooms.
+    float clump = valueNoise(vLocalPos * 24.0);
+    float fine = valueNoise(vLocalPos * 58.0 + 5.3);
+    float floret = clump * 0.66 + fine * 0.34;
+
+    // A third octave, used only for shading. Folding it into the cutout as well
+    // would just punch more holes; kept separate it gives the surviving blooms
+    // a grain that holds up when the camera settles close to the arch.
+    float grain = valueNoise(vLocalPos * 132.0 + 17.9);
+
+    // The cluster thins toward the tip, where the last buds are still forming.
+    float mass = floret * mix(1.18, 0.78, vDrop);
+    if (mass < 0.34) discard;
+
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uLightDir);
+
+    // Petals are thin and wrap hard; light comes through the far side almost as
+    // readily as it lands on the near one.
+    // Absolute facing, not signed. The cluster is open enough to see straight
+    // through, so its back faces are lit blossom too — shading them as though
+    // they were turned away mottles every raceme with grey patches.
+    float key = clamp((abs(dot(N, L)) + 0.5) / 1.5, 0.0, 1.0);
+    float through = pow(clamp(dot(V, -normalize(L + N * 0.45)), 0.0, 1.0), 2.2);
+
+    vec3 petal = mix(uPetalTop, uPetalTip, smoothstep(0.1, 0.95, vDrop));
+    petal *= mix(0.86, 1.1, floret) * mix(0.88, 1.06, grain);
+
+    // Kept deliberately under the bloom pass's threshold except at the very
+    // brightest florets. Blossom that blooms across its whole mass stops being
+    // lilac and turns into a white icicle.
+    vec3 color = mix(petal * 0.3, petal, key) * uLightColor;
+    color += petal * through * 0.45;                       // backlit blossom
+    color += mix(petal, uEmissive, 0.3) * pow(floret, 3.0) * 0.12;
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
+/**
+ * Vertex stage for the crowd.
+ *
+ * Figures are instanced and rooted at the feet, so the idle envelope grows with
+ * height — the head moves, the feet do not. Every instance takes its phase from
+ * where it stands, which is what stops a hundred guests bobbing in unison.
+ */
+const CROWD_VERTEX = /* glsl */ `
+  precision highp float;
+
+  uniform float uTime;
+  uniform float uSway;
+  uniform float uHeight;
+  uniform float uBreath;
+
+  varying vec2  vUv;
+  varying vec3  vWorldNormal;
+  varying vec3  vWorldPos;
+  varying vec3  vLocalPos;
+  varying float vPhase;
+
+  ${INSTANCED_MODEL_MATRIX}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    mat4 M = instancedModelMatrix();
+    vec3 root = vec3(M[3][0], M[3][1], M[3][2]);
+
+    float phase = fract(sin(dot(root.xz, vec2(12.9898, 78.233))) * 43758.5453);
+    vPhase = phase;
+
+    vec4 world = M * vec4(position, 1.0);
+
+    float up = clamp(position.y / max(uHeight, 1e-3), 0.0, 1.0);
+    float amp = up * up * uSway;
+    float beat = 6.2831853 * phase;
+
+    world.x += sin(uTime * 1.7 + beat) * amp;
+    world.z += sin(uTime * 1.3 + beat * 1.7) * amp * 0.7;
+    // A shallow bob on the same beat, so the crowd reads as swaying to music
+    // rather than as a field of reeds.
+    world.y += sin(uTime * 2.6 + beat) * amp * 0.55;
+
+    vec3 n = normalize(mat3(M) * normal);
+
+    // Breath: a slow swell pushed out along the surface, gathered around the
+    // chest and falling away toward the head and the feet. Far slower than the
+    // sway and on its own phase, so the two never beat against each other into
+    // a pulse.
+    float chest = exp(-pow((up - 0.62) * 3.2, 2.0));
+    float breath = 0.5 + 0.5 * sin(uTime * 0.85 + beat * 0.6);
+    world.xyz += n * chest * breath * uBreath;
+
+    vWorldPos = world.xyz;
+    vWorldNormal = n;
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * Guest silhouettes.
+ *
+ * Almost no diffuse: a crowd seen against a lit stage is a field of dark
+ * shapes, and the moment the bodies take real light they stop reading as a
+ * crowd and start reading as a hundred identical models. What carries them is
+ * the rim — a Fresnel edge split between lavender and gold, alternating per
+ * figure — which is deliberately driven just past the bloom pass's luminance
+ * threshold so the crowd catches the same glow as the rest of the venue.
+ *
+ * Four sines and a Fresnel per fragment, no noise taps: this shades a hundred
+ * figures in one instanced draw call.
+ */
+const GUEST_SILHOUETTE_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uHeight;
+  uniform vec3  uRimCool;
+  uniform vec3  uRimWarm;
+  uniform float uRimGain;
+  uniform float uTransmit;
+
+  varying vec3  vLocalPos;
+  varying float vPhase;
+
+  ${STAGE_RIG_LIGHT}
+
+  void main() {
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uLightDir);
+
+    float up = clamp(vLocalPos.y / max(uHeight, 1e-3), 0.0, 1.0);
+
+    // Bodies are darkest at the floor and lift very slightly toward the head,
+    // which reads as the stage light spilling over the crowd.
+    vec3 body = mix(uPrimary * 0.05, uPrimary * 0.16, up);
+    body *= mix(0.8, 1.0, clamp(dot(N, L) * 0.5 + 0.5, 0.0, 1.0));
+
+    // Lavender and gold alternate across the crowd.
+    vec3 rimTint = mix(uRimCool, uRimWarm, step(0.5, vPhase));
+
+    // --- lit by the rig, not by a constant -----------------------------------
+    // The nearest lamp, solved analytically. This is what makes the edge glow
+    // travel around the house as the rig sweeps, instead of every figure
+    // carrying the same painted-on outline.
+    vec3  lamp = nearestLamp(vWorldPos);
+    vec3  Lr = normalize(lamp - vWorldPos);
+    float reach = rigLight(vWorldPos).x;
+
+    // Fresnel alone outlines a silhouette evenly, which reads as a stroke
+    // around a sticker rather than as light landing on someone. Weighted toward
+    // upward-facing edges — shoulders and the crown of the head — since the rig
+    // hangs overhead, and gated on the lamp actually reaching this figure.
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.4);
+    float lift = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+    float facing = clamp(dot(N, Lr) * 0.5 + 0.5, 0.0, 1.0);
+
+    float rim = fres * mix(0.2, 1.0, up) * mix(0.25, 1.0, lift) * uRimGain;
+    // A floor of ambient rim so a figure between beams still reads as a body,
+    // and a large gain where a lamp does land — that swing is the effect.
+    rim *= 0.35 + facing * (0.55 + reach * 5.5);
+
+    // Light carrying through the thin edges of a body with a lamp behind it.
+    // See uTransmit: this is what stands in for genuine alpha.
+    float through = pow(clamp(dot(V, -normalize(Lr + N * 0.45)), 0.0, 1.0), 2.6);
+    through *= (1.0 - clamp(dot(N, V), 0.0, 1.0)) * reach * uTransmit;
+
+    vec3 color = body * uLightColor;
+    color += rimTint * rim * 0.85;
+    color += mix(rimTint, vec3(1.0), 0.25) * through * 2.2;
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
+// -----------------------------------------------------------------------------
+// Sangeet — the amphitheatre
+// -----------------------------------------------------------------------------
 
 /**
  * The amphitheatre's stone — one program for both the faceted tiers and the
@@ -1651,6 +2046,217 @@ const STAGE_POLISH_FRAGMENT = /* glsl */ `
     color += lampTint * beamSpec * lamp * mix(0.5, 2.6, uPolish);
     color += uLightColor * glint * mix(0.25, 0.8, uPolish);
     color += mix(uSecondary, uEmissive, 0.5) * fres * 0.28;
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
+// -----------------------------------------------------------------------------
+// Legacy — the library
+// -----------------------------------------------------------------------------
+
+/**
+ * Vertex stage for the books. Hashes the full instance origin rather than just
+ * its ground position, so two books directly above one another on different
+ * shelves get different bindings.
+ */
+const BOOK_VERTEX = /* glsl */ `
+  precision highp float;
+
+  varying vec2  vUv;
+  varying vec3  vWorldNormal;
+  varying vec3  vWorldPos;
+  varying vec3  vLocalPos;
+  varying float vSeed;
+
+  ${INSTANCED_MODEL_MATRIX}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    mat4 M = instancedModelMatrix();
+    vec4 world = M * vec4(position, 1.0);
+
+    vec3 root = vec3(M[3][0], M[3][1], M[3][2]);
+    vSeed = fract(sin(dot(root, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+
+    vWorldPos = world.xyz;
+    vWorldNormal = normalize(mat3(M) * normal);
+
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * Bound leather spines.
+ *
+ * Every book on the wall is one instanced draw call, so the variety has to come
+ * from the shader: the instance seed picks a binding from a small library
+ * palette — oxblood, forest, navy, tan — and shifts its tone, which is enough
+ * that no two neighbours match. Gilt bands ride the top and bottom of the
+ * spine, placed off-centre the way real raised bands sit.
+ */
+const LEATHER_SPINE_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform vec3  uHearthPos;
+  uniform float uHearthPulse;
+
+  varying vec3  vLocalPos;
+  varying float vSeed;
+
+  ${VALUE_NOISE_3D}
+
+  void main() {
+    // Four bindings, chosen by the instance seed.
+    float pick = fract(vSeed * 4.0);
+    vec3 oxblood = vec3(0.28, 0.055, 0.055);
+    vec3 forest  = vec3(0.07, 0.16, 0.10);
+    vec3 navy    = vec3(0.06, 0.09, 0.21);
+    vec3 tan     = vec3(0.34, 0.22, 0.11);
+
+    vec3 leather = mix(
+      mix(oxblood, forest, step(0.25, pick)),
+      mix(navy, tan, step(0.75, pick)),
+      step(0.5, pick)
+    );
+    // A little tonal drift, so even two books of the same binding differ.
+    leather *= 0.72 + fract(vSeed * 31.0) * 0.5;
+
+    // uv.y runs up the spine. Gilt bands sit in from each end.
+    float up = clamp(vUv.y, 0.0, 1.0);
+    float band = smoothstep(0.02, 0.0, abs(up - 0.78) - 0.025)
+               + smoothstep(0.02, 0.0, abs(up - 0.22) - 0.02);
+    band *= step(0.35, fract(vSeed * 7.0));   // not every volume is banded
+
+    float grain = valueNoise(vLocalPos * 90.0 + vSeed * 20.0);
+
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+
+    vec3  toFire = uHearthPos - vWorldPos;
+    float fireDist = length(toFire);
+    vec3  Lf = toFire / max(fireDist, 1e-3);
+    float fall = uHearthPulse / (1.0 + fireDist * fireDist * 0.4);
+    float fire = clamp(dot(N, Lf), 0.0, 1.0) * fall;
+
+    vec3  Hf = normalize(Lf + V);
+    float sheen = pow(clamp(dot(N, Hf), 0.0, 1.0), 26.0);
+
+    vec3 color = leather * mix(0.9, 1.08, grain) * (0.16 + fire * 2.4);
+    // Gilt is metal: it takes the firelight far harder than the leather does.
+    color += mix(uEmissive, vec3(1.0, 0.86, 0.55), 0.5) * band * (0.3 + fire * 3.2);
+    color += uEmissive * sheen * fall * 0.5;
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
+/**
+ * Dark walnut.
+ *
+ * Wood is growth rings seen in section, so that is how this is built: distance
+ * from a grain axis, warped by turbulence so the rings wander, then wrapped
+ * into a saw-tooth. Where a face cuts the rings obliquely the bands stretch
+ * into the long figure you see on a plank, and where it cuts across they close
+ * into tight ellipses — both fall out of the same field for free, which is why
+ * the rings are solved in object space rather than faked per-face.
+ *
+ * On top of that: a pore layer scratched along the grain, and a satin sheen
+ * that rides *between* the rings, because the harder late-growth wood takes a
+ * better polish than the soft early wood beside it. That difference is most of
+ * what makes waxed timber look waxed.
+ *
+ * Lit by the hearth as a point source, so the shelves brighten as the fire
+ * gutters and the far end of the room stays in the dark.
+ */
+const WALNUT_WOOD_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform float uRingScale;
+  uniform float uSheen;
+  uniform vec3  uHearthPos;
+  uniform float uHearthPulse;
+
+  varying vec3 vLocalPos;
+
+  ${VALUE_NOISE_3D}
+
+  float turbulence(vec3 p) {
+    float sum = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 3; i++) {
+      sum += abs(valueNoise(p) - 0.5) * amp;
+      p *= 2.07;
+      amp *= 0.5;
+    }
+    return sum;
+  }
+
+  void main() {
+    vec3 P = vLocalPos * uRingScale;
+    vec3 N = normalize(vWorldNormal);
+
+    // Which way the grain runs.
+    //
+    // Rings have to be measured in the plane *perpendicular* to the length of
+    // the board. Measuring them about one fixed axis turns every wide flat
+    // surface into a single end-grain section — the floor of this room came out
+    // as one enormous set of bullseyes, like a tree stump seen from above.
+    // A horizontal surface is a floorboard or a shelf, so its grain runs
+    // across the room; an upright one is a stile, so its grain runs up.
+    bool lying = abs(N.y) > 0.6;
+    vec2 section = lying ? P.yz : P.xz;
+    float along = lying ? P.x : P.y;
+
+    float warp = turbulence(P * 0.5 + 3.3);
+
+    float radius = length(section) + warp * 2.2 + along * 0.12;
+    float rings = fract(radius);
+    // Sharpened toward the late-growth side: real rings are not a sine.
+    float ring = pow(rings, 1.8);
+
+    // Board seams, running with the grain. A floor is laid, not carved from one
+    // slab, and the joints are most of what says so.
+    float across = lying ? P.z : P.x;
+    float seam = smoothstep(0.06, 0.0, abs(fract(across * 0.42) - 0.5) - 0.44);
+
+    // Pores, scratched along the grain rather than across it.
+    vec3 poreP = lying
+      ? vec3(P.x * 3.0, P.y * 26.0, P.z * 26.0)
+      : vec3(P.x * 26.0, P.y * 3.0, P.z * 26.0);
+    float pore = valueNoise(poreP);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uLightDir);
+
+    vec3  toFire = uHearthPos - vWorldPos;
+    float fireDist = length(toFire);
+    vec3  Lf = toFire / max(fireDist, 1e-3);
+    float fall = uHearthPulse / (1.0 + fireDist * fireDist * 0.4);
+
+    float key = clamp(dot(N, L), 0.0, 1.0) * 0.6 + 0.4;
+    float fire = clamp(dot(N, Lf), 0.0, 1.0) * fall;
+
+    // Late wood polishes harder than early wood, so the sheen rides the rings.
+    vec3  Hf = normalize(Lf + V);
+    float gloss = mix(18.0, 96.0, ring);
+    float sheen = pow(clamp(dot(N, Hf), 0.0, 1.0), gloss) * uSheen;
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
+
+    // Dark walnut: a cool near-black in the early wood, warm chocolate in the
+    // late. The chapter's own primary tints it so the palette still carries.
+    vec3 early = mix(vec3(0.055, 0.032, 0.022), uPrimary * 0.16, 0.35);
+    vec3 late  = mix(vec3(0.20, 0.115, 0.062), uPrimary * 0.5, 0.3);
+    vec3 timber = mix(early, late, ring) * mix(0.86, 1.06, pore);
+    timber *= 1.0 - seam * 0.55;
+
+    vec3 color = timber * key * uLightColor * 0.5;
+    color += timber * fire * 2.6;                       // firelight on the wood
+    color += mix(uEmissive, vec3(1.0), 0.2) * sheen * fall * 1.4;
+    color += uEmissive * fres * fall * 0.35;            // warm edge off the fire
     color *= mix(0.9, 1.0, uTransition);
 
     gl_FragColor = vec4(color, uOpacity);
@@ -1872,6 +2478,10 @@ export type CeremonyShaderName =
   | "lightShaft"
   | "mossCarpet"
   | "wildflower"
+  | "walnutWood"
+  | "leatherSpine"
+  | "wisteriaBloom"
+  | "guestSilhouette"
   | "stagePolish"
   | "sacredFire"
   | "smokePlume"
@@ -1917,6 +2527,22 @@ export const CEREMONY_SHADERS: Readonly<
   },
   // Marble and the pool share the glade's instancing-aware vertex stage; only
   // the reflection needs its own, to bend with the water.
+  leatherSpine: {
+    vertexShader: BOOK_VERTEX,
+    fragmentShader: LEATHER_SPINE_FRAGMENT,
+  },
+  walnutWood: {
+    vertexShader: GLADE_VERTEX,
+    fragmentShader: WALNUT_WOOD_FRAGMENT,
+  },
+  wisteriaBloom: {
+    vertexShader: WISTERIA_VERTEX,
+    fragmentShader: WISTERIA_BLOOM_FRAGMENT,
+  },
+  guestSilhouette: {
+    vertexShader: CROWD_VERTEX,
+    fragmentShader: GUEST_SILHOUETTE_FRAGMENT,
+  },
   stagePolish: {
     vertexShader: GLADE_VERTEX,
     fragmentShader: STAGE_POLISH_FRAGMENT,

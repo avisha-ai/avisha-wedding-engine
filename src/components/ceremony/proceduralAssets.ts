@@ -181,6 +181,11 @@ interface SurfaceSpec {
   /** Optional beaten-metal dent layer. */
   readonly dentCells?: number;
   readonly dentDepth?: number;
+  /** Optional coursed-brick layer: courses down V, bricks across U. */
+  readonly brickRows?: number;
+  readonly brickCols?: number;
+  /** How deep the mortar joint is cut. */
+  readonly mortarDepth?: number;
 }
 
 export interface SurfaceMaps {
@@ -210,6 +215,26 @@ function buildHeightField(spec: SurfaceSpec, size: number): Float32Array {
         const d = cellular(x * dentScale, y * dentScale, spec.dentCells, spec.seed + 31);
         h += dentDepth * (d * d - 0.35);
       }
+      if (spec.brickRows) {
+        // Coursed bond: every other course is offset by half a brick, which is
+        // the whole difference between brickwork and a tiled grid.
+        const rows = spec.brickRows;
+        const cols = spec.brickCols ?? rows * 2;
+        const v = (y / size) * rows;
+        const course = Math.floor(v);
+        const u = (x / size) * cols + (course % 2) * 0.5;
+
+        const du = Math.abs(((u % 1) + 1) % 1 - 0.5) * 2;
+        const dv = Math.abs(((v % 1) + 1) % 1 - 0.5) * 2;
+        // Distance to the nearest joint, in either direction.
+        const joint = Math.max(du, dv);
+        const mortar = joint > 0.86 ? (joint - 0.86) / 0.14 : 0;
+
+        h -= mortar * (spec.mortarDepth ?? 0.6);
+        // Each brick fired a slightly different shade.
+        h += (hash2(course, Math.floor(u), spec.seed + 5) - 0.5) * 0.25;
+      }
+
       field[y * size + x] = h;
     }
   }
@@ -365,6 +390,18 @@ const SURFACE_SPECS = {
     roughVariance: 0.12,
   },
   // Weathered courtyard flagstone under the banyan.
+  // Coursed brick for the library hearth.
+  hearthBrick: {
+    seed: 149,
+    period: 9,
+    octaves: 3,
+    bumpStrength: 2.6,
+    roughBase: 0.88,
+    roughVariance: 0.12,
+    brickRows: 12,
+    brickCols: 6,
+    mortarDepth: 0.75,
+  },
   courtyardStone: {
     seed: 127,
     period: 6,
@@ -923,6 +960,467 @@ export function flameGeometry(): THREE.BufferGeometry {
       16,
     ),
   );
+}
+
+// -----------------------------------------------------------------------------
+// Legacy — the estate library
+// -----------------------------------------------------------------------------
+
+/** Where the back wall stands, and how wide the room reads. */
+export const LIBRARY_WALL_Z = -1.35;
+export const LIBRARY_WIDTH = 5.6;
+/** Height of the hearth opening, and the top of the firebox. */
+export const HEARTH_OPENING_W = 1.18;
+export const HEARTH_OPENING_H = 0.92;
+/** Where the fire itself burns. */
+export const HEARTH_FIRE_Y = 0.24;
+export const HEARTH_FIRE_Z = LIBRARY_WALL_Z + 0.42;
+
+/** Board floor. */
+export function libraryFloorGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("libraryFloor", () =>
+    bevelledBox(LIBRARY_WIDTH + 1.4, 0.12, 4.4, 0.03),
+  );
+}
+
+/** Brick back wall, with the chimney breast standing proud of it. */
+export function libraryWallGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("libraryWall", () =>
+    mergeParts([
+      { geometry: bevelledBox(LIBRARY_WIDTH + 1.4, 4.4, 0.24, 0.03) },
+      // Chimney breast.
+      {
+        geometry: bevelledBox(2.15, 4.4, 0.34, 0.04),
+        matrix: at(0, 0, 0.26),
+      },
+    ]),
+  );
+}
+
+/**
+ * The fireplace surround: two piers and a lintel, leaving the firebox opening.
+ * Merged, so the whole hearth is one draw call.
+ */
+export function hearthSurroundGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("hearthSurround", () => {
+    const pier = (HEARTH_OPENING_W * 0.5) + 0.3;
+    const lintelY = HEARTH_OPENING_H + 0.17;
+    return mergeParts([
+      {
+        geometry: bevelledBox(0.6, HEARTH_OPENING_H + 0.34, 0.36, 0.03),
+        matrix: at(-pier, (HEARTH_OPENING_H + 0.34) / 2, 0),
+      },
+      {
+        geometry: bevelledBox(0.6, HEARTH_OPENING_H + 0.34, 0.36, 0.03),
+        matrix: at(pier, (HEARTH_OPENING_H + 0.34) / 2, 0),
+      },
+      {
+        geometry: bevelledBox(HEARTH_OPENING_W + 1.2, 0.34, 0.36, 0.03),
+        matrix: at(0, lintelY + 0.17, 0),
+      },
+    ]);
+  });
+}
+
+/** The dark firebox behind the opening, so the hearth reads as a cavity. */
+export function hearthBoxGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("hearthBox", () =>
+    bevelledBox(HEARTH_OPENING_W, HEARTH_OPENING_H, 0.1, 0.01),
+  );
+}
+
+/** Stone hearth slab, laid in front of the fire. */
+export function hearthSlabGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("hearthSlab", () =>
+    bevelledBox(HEARTH_OPENING_W + 1.5, 0.09, 0.78, 0.025),
+  );
+}
+
+/** Walnut mantel: a shelf on a moulded bearer. */
+export function mantelGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("mantel", () =>
+    mergeParts([
+      { geometry: bevelledBox(HEARTH_OPENING_W + 1.55, 0.1, 0.52, 0.02) },
+      {
+        geometry: bevelledBox(HEARTH_OPENING_W + 1.3, 0.07, 0.42, 0.018),
+        matrix: at(0, -0.08, -0.03),
+      },
+    ]),
+  );
+}
+
+/** A log lying in the firebox. Instanced across the grate. */
+export function hearthLogGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("hearthLog", () => {
+    const log = roughenRadial(
+      lathe(
+        [
+          [0.0, -0.5],
+          [0.072, -0.5],
+          [0.078, -0.2],
+          [0.074, 0.16],
+          [0.08, 0.42],
+          [0.07, 0.5],
+          [0.0, 0.5],
+        ],
+        7,
+      ),
+      0.22,
+      5,
+      733,
+    );
+    // Lathe runs up +Y; lay it along +X to sit across the grate.
+    log.rotateZ(Math.PI / 2);
+    log.computeVertexNormals();
+    log.computeBoundingSphere();
+    return log;
+  });
+}
+
+/**
+ * The hearth flame: broader and lower than the wedding kund's column, because
+ * a log fire spreads across its bed rather than rising in a single tongue.
+ */
+export function hearthFlameGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("hearthFlame", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.1, 0.02],
+        [0.16, 0.07],
+        [0.19, 0.15],
+        [0.185, 0.26],
+        [0.16, 0.38],
+        [0.125, 0.52],
+        [0.088, 0.66],
+        [0.05, 0.8],
+        [0.022, 0.92],
+        [0.0, 1.0],
+      ],
+      18,
+    ),
+  );
+}
+
+/**
+ * A bookcase: carcass, back, and four shelves, merged into one buffer.
+ * Authored from its own base, opening toward +Z.
+ */
+export const BOOKCASE_W = 1.5;
+export const BOOKCASE_H = 2.35;
+export const BOOKCASE_D = 0.4;
+/** Height of each shelf above the bookcase base. */
+export const BOOKCASE_SHELF_Y = [0.34, 0.83, 1.32, 1.81] as const;
+
+export function bookcaseGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("bookcase", () => {
+    const parts: GeometryPart[] = [
+      // Sides.
+      {
+        geometry: bevelledBox(0.07, BOOKCASE_H, BOOKCASE_D, 0.014),
+        matrix: at(-(BOOKCASE_W / 2 - 0.035), BOOKCASE_H / 2, 0),
+      },
+      {
+        geometry: bevelledBox(0.07, BOOKCASE_H, BOOKCASE_D, 0.014),
+        matrix: at(BOOKCASE_W / 2 - 0.035, BOOKCASE_H / 2, 0),
+      },
+      // Back panel.
+      {
+        geometry: bevelledBox(BOOKCASE_W, BOOKCASE_H, 0.035, 0.01),
+        matrix: at(0, BOOKCASE_H / 2, -(BOOKCASE_D / 2 - 0.018)),
+      },
+      // Plinth and cornice.
+      {
+        geometry: bevelledBox(BOOKCASE_W + 0.08, 0.16, BOOKCASE_D + 0.06, 0.02),
+        matrix: at(0, 0.08, 0),
+      },
+      {
+        geometry: bevelledBox(BOOKCASE_W + 0.12, 0.14, BOOKCASE_D + 0.08, 0.022),
+        matrix: at(0, BOOKCASE_H - 0.07, 0),
+      },
+    ];
+
+    for (const y of BOOKCASE_SHELF_Y) {
+      parts.push({
+        geometry: bevelledBox(BOOKCASE_W - 0.09, 0.045, BOOKCASE_D - 0.05, 0.01),
+        matrix: at(0, y, 0.012),
+      });
+    }
+
+    return mergeParts(parts);
+  });
+}
+
+/** A single volume, standing on its tail. Instanced along the shelves. */
+export function bookGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("book", () => bevelledBox(1, 1, 1, 0.06));
+}
+
+/**
+ * Fill the shelves of one bookcase.
+ *
+ * Widths, heights and lean are all drawn from the same seeded hash the surface
+ * maps use, so a given bookcase is always shelved the same way. Volumes are
+ * packed left to right until the shelf runs out, with the occasional gap — a
+ * shelf filled edge to edge reads as wallpaper rather than as books.
+ */
+export function shelveBooks(seed: number): Placement[] {
+  const placements: Placement[] = [];
+  const usable = BOOKCASE_W - 0.16;
+
+  BOOKCASE_SHELF_Y.forEach((shelfY, shelf) => {
+    let x = -usable / 2;
+    let i = 0;
+
+    while (x < usable / 2 - 0.03 && i < 40) {
+      const key = shelf * 97 + i;
+      const width = 0.028 + hash2(key, 1, seed) * 0.042;
+      const height = 0.26 + hash2(key, 2, seed) * 0.13;
+      const depth = 0.2 + hash2(key, 3, seed) * 0.07;
+
+      if (x + width > usable / 2) break;
+
+      // Occasional gap where a volume has been taken down.
+      if (hash2(key, 4, seed) > 0.12) {
+        placements.push({
+          position: [
+            x + width / 2,
+            shelfY + 0.023 + height / 2,
+            0.012 - (BOOKCASE_D - 0.05) / 2 + depth / 2 + 0.02,
+          ],
+          scale: [width, height, depth],
+        });
+      }
+
+      x += width + 0.004;
+      i++;
+    }
+  });
+
+  return placements;
+}
+
+// -----------------------------------------------------------------------------
+// Production layer — the wisteria entrance arch
+// -----------------------------------------------------------------------------
+
+/** Half the arch's span, post centre to post centre. */
+export const WISTERIA_HALF_SPAN = 3.0;
+/** Height the posts rise to, where the span springs. */
+export const WISTERIA_POST_HEIGHT = 3.3;
+/**
+ * Height of the crown of the arch.
+ *
+ * Tuned against the settled camera, not by eye on the model. Pushing the arch
+ * further from the camera lowers the fringe's *angular* height faster than it
+ * shrinks it, so a crown that framed the shot from close up drops halfway down
+ * the frame from further back. At this height the racemes hang into the top of
+ * frame and no further.
+ */
+export const WISTERIA_CROWN_Y = 4.5;
+
+/** A rustic timber post for the arch, roughened off-round. */
+export function wisteriaPostGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("wisteriaPost", () =>
+    roughenRadial(
+      lathe(
+        [
+          [0.0, 0.0],
+          [0.13, 0.0],
+          [0.105, 0.16],
+          [0.088, 0.7],
+          [0.094, 1.3],
+          [0.082, 1.9],
+          [0.086, 2.4],
+          [0.072, WISTERIA_POST_HEIGHT],
+          [0.0, WISTERIA_POST_HEIGHT],
+        ],
+        10,
+      ),
+      0.2,
+      5,
+      613,
+    ),
+  );
+}
+
+/** Stone footing under each post, so the arch can stand off the glade floor. */
+export function wisteriaFootingGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("wisteriaFooting", () =>
+    bevelledBox(0.46, 0.22, 0.46, 0.04),
+  );
+}
+
+/**
+ * The arching span, post top to post top. Tapers toward the crown, so the
+ * timber reads as bent rather than extruded.
+ */
+export function wisteriaSpanGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("wisteriaSpan", () => {
+    const curve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(-WISTERIA_HALF_SPAN, WISTERIA_POST_HEIGHT, 0),
+      // Control point above the crown: a Bézier passes at half the control's
+      // rise, so it has to be overshot to land the crown where it is wanted.
+      new THREE.Vector3(0, WISTERIA_CROWN_Y * 2 - WISTERIA_POST_HEIGHT, 0),
+      new THREE.Vector3(WISTERIA_HALF_SPAN, WISTERIA_POST_HEIGHT, 0),
+    );
+    return taperedTube(curve, 26, 6, (t) => 0.075 - Math.sin(t * Math.PI) * 0.022);
+  });
+}
+
+/** A hanging raceme of wisteria. Authored dropping from its own origin. */
+export function wisteriaRacemeGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("wisteriaRaceme", () =>
+    lathe(
+      [
+        [0.0, 0.0],
+        [0.062, -0.04],
+        [0.092, -0.12],
+        [0.104, -0.24],
+        [0.098, -0.38],
+        [0.084, -0.52],
+        [0.066, -0.65],
+        [0.046, -0.76],
+        [0.026, -0.85],
+        [0.0, -0.92],
+      ],
+      8,
+    ),
+  );
+}
+
+/**
+ * Where each raceme hangs, solved along the arch's own curve so they follow the
+ * span instead of a straight line. Alternating sides of the timber, at uneven
+ * spacing, so the fringe never reads as a comb.
+ */
+export function wisteriaRacemePlacements(): Placement[] {
+  const curve = new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(-WISTERIA_HALF_SPAN, WISTERIA_POST_HEIGHT, 0),
+    new THREE.Vector3(0, WISTERIA_CROWN_Y * 2 - WISTERIA_POST_HEIGHT, 0),
+    new THREE.Vector3(WISTERIA_HALF_SPAN, WISTERIA_POST_HEIGHT, 0),
+  );
+
+  const placements: Placement[] = [];
+  const count = 26;
+
+  for (let i = 0; i < count; i++) {
+    const t = (i + 0.5) / count;
+    const point = curve.getPointAt(t);
+    const jitterZ = (hash2(i, 3, 811) - 0.5) * 0.16;
+
+    placements.push({
+      position: [
+        point.x + (hash2(i, 1, 811) - 0.5) * 0.1,
+        point.y - 0.05,
+        jitterZ,
+      ],
+      rotation: [0, hash2(i, 2, 811) * Math.PI * 2, 0],
+      scale: 0.66 + hash2(i, 4, 811) * 0.62,
+    });
+  }
+
+  return placements;
+}
+
+// -----------------------------------------------------------------------------
+// Production layer — the crowd
+// -----------------------------------------------------------------------------
+
+/** Height of a guest figure in local units. */
+export const GUEST_HEIGHT = 1.55;
+
+/**
+ * A guest silhouette: a turned body with a head, merged into one buffer.
+ *
+ * Kept deliberately coarse — roughly 190 triangles — because a hundred of these
+ * are drawn from one instanced call and the shader gives them a rim, not a
+ * face. Detail here would cost triangles for something no one resolves.
+ */
+export function guestSilhouetteGeometry(): THREE.BufferGeometry {
+  return cachedGeometry("guestSilhouette", () => {
+    const body = lathe(
+      [
+        [0.0, 0.0],
+        [0.125, 0.0],
+        [0.108, 0.14],
+        [0.096, 0.44],
+        [0.112, 0.72],
+        [0.142, 0.96],
+        [0.152, 1.13],
+        [0.126, 1.26],
+        [0.072, 1.33],
+        [0.056, 1.37],
+      ],
+      7,
+    );
+
+    const head = new THREE.SphereGeometry(0.104, 8, 5);
+    head.translate(0, 1.45, 0);
+
+    const merged = mergeParts([{ geometry: body }, { geometry: head }]);
+    body.dispose();
+    head.dispose();
+    return merged;
+  });
+}
+
+export interface RingScatterOptions {
+  readonly count: number;
+  readonly innerRadius: number;
+  readonly outerRadius: number;
+  readonly y: number;
+  readonly seed: number;
+  readonly minScale: number;
+  readonly maxScale: number;
+  /** Turn each instance to face the origin. */
+  readonly faceCentre?: boolean;
+}
+
+/**
+ * Scatter instances around an annulus — the seating tiers.
+ *
+ * Angles are stratified rather than drawn freely: one instance per equal slice,
+ * jittered within it. A free draw clumps and leaves gaps, which on a ring of
+ * seats reads as a bug rather than as natural spacing.
+ */
+export function scatterOnRing(options: RingScatterOptions): Placement[] {
+  const {
+    count,
+    innerRadius,
+    outerRadius,
+    y,
+    seed,
+    minScale,
+    maxScale,
+    faceCentre = true,
+  } = options;
+
+  const slice = (Math.PI * 2) / count;
+  const placements: Placement[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const angle = (i + 0.18 + hash2(i, 1, seed) * 0.64) * slice;
+    const r = innerRadius + (outerRadius - innerRadius) * hash2(i, 2, seed);
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
+
+    placements.push({
+      position: [x, y, z],
+      rotation: [
+        0,
+        // A lathe figure has no front, so the turn only varies the silhouette;
+        // facing the centre still lines the shoulders up toward the stage.
+        faceCentre
+          ? -angle + Math.PI / 2 + (hash2(i, 3, seed) - 0.5) * 0.7
+          : hash2(i, 3, seed) * Math.PI * 2,
+        0,
+      ],
+      scale: minScale + (maxScale - minScale) * hash2(i, 4, seed),
+    });
+  }
+
+  return placements;
 }
 
 // -----------------------------------------------------------------------------
@@ -2439,6 +2937,18 @@ export interface ProposalMaterials {
   readonly core: THREE.MeshStandardMaterial;
 }
 
+export interface LibraryMaterials {
+  readonly brick: THREE.MeshStandardMaterial;
+  readonly hearthStone: THREE.MeshStandardMaterial;
+  readonly firebox: THREE.MeshStandardMaterial;
+  readonly log: THREE.MeshStandardMaterial;
+}
+
+export interface WisteriaMaterials {
+  readonly timber: THREE.MeshStandardMaterial;
+  readonly stone: THREE.MeshStandardMaterial;
+}
+
 export interface SangeetMaterials {
   readonly rig: THREE.MeshStandardMaterial;
   readonly lens: THREE.MeshStandardMaterial;
@@ -2469,6 +2979,8 @@ const receptionMaterialCache = new Map<string, ReceptionMaterials>();
 const mehendiMaterialCache = new Map<string, MehendiMaterials>();
 const proposalMaterialCache = new Map<string, ProposalMaterials>();
 const sangeetMaterialCache = new Map<string, SangeetMaterials>();
+const wisteriaMaterialCache = new Map<string, WisteriaMaterials>();
+const libraryMaterialCache = new Map<string, LibraryMaterials>();
 
 /** Late-bind the environment map once the renderer has produced one. */
 function bindEnv(
@@ -2551,6 +3063,99 @@ export function getWeddingMaterials(
 
   bindEnv(set.bronze, env, 1.6);
   bindEnv(set.sandstone, env, 0.55);
+  return set;
+}
+
+/**
+ * Masonry for the library. The walnut and the book bindings are hand-authored
+ * shaders; these are the surfaces that want real maps and the scene's lights.
+ */
+export function getLibraryMaterials(
+  chapter: ChapterConfig,
+  env: THREE.Texture | null,
+): LibraryMaterials {
+  let set = libraryMaterialCache.get(chapter.id);
+
+  if (!set) {
+    const brickMaps = setRepeat(getSurfaceMaps("hearthBrick"), 3, 2.2);
+    const stoneMaps = setRepeat(getSurfaceMaps("courtyardStone"), 2, 1.5);
+
+    set = {
+      brick: new THREE.MeshStandardMaterial({
+        color: "#6B4A3C",
+        roughness: 0.95,
+        metalness: 0.0,
+        normalMap: brickMaps.normalMap,
+        normalScale: new THREE.Vector2(1.5, 1.5),
+        roughnessMap: brickMaps.roughnessMap,
+        transparent: true,
+      }),
+      hearthStone: new THREE.MeshStandardMaterial({
+        color: "#5B554E",
+        roughness: 0.8,
+        metalness: 0.02,
+        normalMap: stoneMaps.normalMap,
+        normalScale: new THREE.Vector2(0.7, 0.7),
+        roughnessMap: stoneMaps.roughnessMap,
+        transparent: true,
+      }),
+      // The firebox is soot: it takes almost no light back, which is what makes
+      // the opening read as a cavity rather than as a painted panel.
+      firebox: new THREE.MeshStandardMaterial({
+        color: "#0B0908",
+        roughness: 1.0,
+        metalness: 0.0,
+        transparent: true,
+      }),
+      log: new THREE.MeshStandardMaterial({
+        color: "#2A1B12",
+        emissive: new THREE.Color(chapter.palette.emissive),
+        emissiveIntensity: 0.5,
+        roughness: 0.95,
+        metalness: 0.0,
+        transparent: true,
+      }),
+    };
+    libraryMaterialCache.set(chapter.id, set);
+  }
+
+  bindEnv(set.brick, env, 0.25);
+  bindEnv(set.hearthStone, env, 0.3);
+  return set;
+}
+
+/** Timber and footing stone for the wisteria entrance arch. */
+export function getWisteriaMaterials(
+  chapter: ChapterConfig,
+  env: THREE.Texture | null,
+): WisteriaMaterials {
+  let set = wisteriaMaterialCache.get(chapter.id);
+
+  if (!set) {
+    const barkMaps = setRepeat(getSurfaceMaps("bark"), 1.5, 2);
+
+    set = {
+      timber: new THREE.MeshStandardMaterial({
+        color: "#4A3B2E",
+        roughness: 0.9,
+        metalness: 0.0,
+        normalMap: barkMaps.normalMap,
+        normalScale: new THREE.Vector2(0.9, 0.9),
+        roughnessMap: barkMaps.roughnessMap,
+        transparent: true,
+      }),
+      stone: new THREE.MeshStandardMaterial({
+        color: "#4C4A47",
+        roughness: 0.85,
+        metalness: 0.02,
+        transparent: true,
+      }),
+    };
+    wisteriaMaterialCache.set(chapter.id, set);
+  }
+
+  bindEnv(set.timber, env, 0.3);
+  bindEnv(set.stone, env, 0.35);
   return set;
 }
 
