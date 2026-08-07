@@ -21,6 +21,7 @@ import * as THREE from "three";
 import { kelvinToRGB, type ChapterConfig, type ChapterId } from "./ceremonyConfig";
 import {
   CEREMONY_SHADERS,
+  createBrickUniforms,
   createCeremonyUniforms,
   createCrystalUniforms,
   createFlowerUniforms,
@@ -2336,6 +2337,7 @@ const HEARTH_WORLD: readonly [number, number, number] = [
  */
 interface LibraryShaders {
   readonly walnut: THREE.ShaderMaterial;
+  readonly brick: THREE.ShaderMaterial;
   readonly spine: THREE.ShaderMaterial;
   readonly flame: THREE.ShaderMaterial;
   readonly coal: THREE.ShaderMaterial;
@@ -2346,7 +2348,7 @@ interface LibraryShaders {
 
 function buildLibraryShaders(chapter: ChapterConfig): LibraryShaders {
   const program = (
-    name: "walnutWood" | "leatherSpine" | "sacredFire" | "ember",
+    name: "walnutWood" | "hearthBrick" | "leatherSpine" | "sacredFire" | "ember",
     uniforms: CeremonyUniforms,
     extra?: Partial<THREE.ShaderMaterialParameters>,
   ): THREE.ShaderMaterial => {
@@ -2371,6 +2373,9 @@ function buildLibraryShaders(chapter: ChapterConfig): LibraryShaders {
   const spineUniforms = createSpineUniforms();
   spineUniforms.uHearthPos.value = [...HEARTH_WORLD];
 
+  const brickUniforms = createBrickUniforms();
+  brickUniforms.uHearthPos.value = [...HEARTH_WORLD];
+
   // The kund's fire program, re-tuned. A log fire is lazier and less hungry
   // than a sacred fire, so it whips less and burns cooler up the column.
   const flameUniforms = createFireUniforms();
@@ -2383,6 +2388,7 @@ function buildLibraryShaders(chapter: ChapterConfig): LibraryShaders {
   const walnut = program("walnutWood", walnutUniforms);
   const spine = program("leatherSpine", spineUniforms);
   const coal = program("ember", coalUniforms);
+  const brick = program("hearthBrick", brickUniforms);
 
   const flame = program("sacredFire", flameUniforms, {
     side: THREE.DoubleSide,
@@ -2393,11 +2399,18 @@ function buildLibraryShaders(chapter: ChapterConfig): LibraryShaders {
 
   return {
     walnut,
+    brick,
     spine,
     flame,
     coal,
-    timed: [walnutUniforms, spineUniforms, flameUniforms, coalUniforms],
-    hearthLit: [walnutUniforms, spineUniforms],
+    timed: [
+      walnutUniforms,
+      brickUniforms,
+      spineUniforms,
+      flameUniforms,
+      coalUniforms,
+    ],
+    hearthLit: [walnutUniforms, brickUniforms, spineUniforms],
   };
 }
 
@@ -2475,7 +2488,7 @@ function LegacyLibraryWorld({ chapter }: WorldProps): JSX.Element {
       />
       <Part
         geometry={libraryWallGeometry()}
-        material={materials.brick}
+        material={shaders.brick}
         position={[0, 2.2, LIBRARY_WALL_Z]}
       />
 
@@ -2488,7 +2501,7 @@ function LegacyLibraryWorld({ chapter }: WorldProps): JSX.Element {
       />
       <Part
         geometry={hearthSurroundGeometry()}
-        material={materials.brick}
+        material={shaders.brick}
         position={[0, 0, LIBRARY_WALL_Z + 0.42]}
       />
       <Part

@@ -2938,7 +2938,9 @@ export interface ProposalMaterials {
 }
 
 export interface LibraryMaterials {
-  readonly brick: THREE.MeshStandardMaterial;
+  // No brick here: the chimney breast and surround are the `hearthBrick`
+  // shader, which courses itself in world space and takes the fire's own
+  // position — neither of which a `MeshStandardMaterial` can express.
   readonly hearthStone: THREE.MeshStandardMaterial;
   readonly firebox: THREE.MeshStandardMaterial;
   readonly log: THREE.MeshStandardMaterial;
@@ -3077,19 +3079,9 @@ export function getLibraryMaterials(
   let set = libraryMaterialCache.get(chapter.id);
 
   if (!set) {
-    const brickMaps = setRepeat(getSurfaceMaps("hearthBrick"), 3, 2.2);
     const stoneMaps = setRepeat(getSurfaceMaps("courtyardStone"), 2, 1.5);
 
     set = {
-      brick: new THREE.MeshStandardMaterial({
-        color: "#6B4A3C",
-        roughness: 0.95,
-        metalness: 0.0,
-        normalMap: brickMaps.normalMap,
-        normalScale: new THREE.Vector2(1.5, 1.5),
-        roughnessMap: brickMaps.roughnessMap,
-        transparent: true,
-      }),
       hearthStone: new THREE.MeshStandardMaterial({
         color: "#5B554E",
         roughness: 0.8,
@@ -3119,7 +3111,6 @@ export function getLibraryMaterials(
     libraryMaterialCache.set(chapter.id, set);
   }
 
-  bindEnv(set.brick, env, 0.25);
   bindEnv(set.hearthStone, env, 0.3);
   return set;
 }

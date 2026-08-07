@@ -389,6 +389,40 @@ export function createSpineUniforms(): SpineUniforms {
   };
 }
 
+/**
+ * Extra uniforms for {@link CEREMONY_SHADERS.hearthBrick}.
+ *
+ * Same hearth contract as the walnut and the bindings — the library's masonry
+ * is lit by the fire, not by the scene — plus the two terms that only masonry
+ * needs: the coursing pitch, and the amplitude of the convection shimmer the
+ * vertex stage runs up the chimney breast.
+ */
+export interface BrickUniforms extends CeremonyUniforms {
+  /** World position of the hearth fire. */
+  readonly uHearthPos: Uniform<Vec3>;
+  /** Firelight brightness, `0..~1`. Driven per-frame to flicker. */
+  readonly uHearthPulse: Uniform<number>;
+  /** Brick courses per world unit. Sets both course height and brick length. */
+  readonly uCourse: Uniform<number>;
+  /** Peak convection displacement, in world units. */
+  readonly uShimmer: Uniform<number>;
+  /** How black the masonry goes where the smoke has been hitting it. */
+  readonly uSoot: Uniform<number>;
+}
+
+/** Fresh hearth-brick uniform set. */
+export function createBrickUniforms(): BrickUniforms {
+  return {
+    ...createCeremonyUniforms(),
+    uHearthPos: { value: [0, 0.5, -0.7] },
+    uHearthPulse: { value: 1 },
+    // ~90mm courses and ~180mm bricks at one unit to the metre.
+    uCourse: { value: 11.0 },
+    uShimmer: { value: 0.006 },
+    uSoot: { value: 0.85 },
+  };
+}
+
 /** Extra uniforms for {@link CEREMONY_SHADERS.sacredFire}. */
 export interface FireUniforms extends CeremonyUniforms {
   /** Peak lateral whip at the tip of a flame, in world units. */
@@ -2263,6 +2297,179 @@ const WALNUT_WOOD_FRAGMENT = /* glsl */ `
   }
 `;
 
+/**
+ * Vertex stage for the hearth masonry.
+ *
+ * Brick does not move — but the air in front of a burning fire does, and this
+ * is the stage that has the fire's position, so this is where that lives. Each
+ * vertex works out how much fire it can actually see (near the opening *and*
+ * turned toward it), and two travelling waves climb the wall at incommensurate
+ * rates, so the shimmer advects upward like convection rather than standing
+ * still like a ripple.
+ *
+ * The amplitude is deliberately tiny — `uShimmer` peaks around 6mm — for two
+ * reasons. It is heat haze, not jelly; and the depth pass uses three's own
+ * depth material, which cannot see this displacement, so the shadow the wall
+ * casts is always its rest pose. At 6mm that mismatch stays well inside the
+ * PCF kernel, the same argument the mehendi silk is built on.
+ *
+ * `vHeat` is handed to the fragment stage rather than recomputed there: it is
+ * the same quantity the glow-back term needs, and solving it per-vertex is
+ * both cheaper and — since it drove the displacement — guaranteed consistent.
+ */
+const HEARTH_BRICK_VERTEX = /* glsl */ `
+  precision highp float;
+
+  uniform float uTime;
+  uniform vec3  uHearthPos;
+  uniform float uHearthPulse;
+  uniform float uShimmer;
+
+  varying vec2  vUv;
+  varying vec3  vWorldNormal;
+  varying vec3  vWorldPos;
+  varying vec3  vLocalPos;
+  varying float vHeat;
+
+  ${INSTANCED_MODEL_MATRIX}
+
+  void main() {
+    vUv = uv;
+    vLocalPos = position;
+
+    mat4 M = instancedModelMatrix();
+    vec4 world = M * vec4(position, 1.0);
+    vec3 N = normalize(mat3(M) * normal);
+
+    // How much of the fire this point sees: inverse-square with distance, and
+    // nothing at all on a face turned away from the opening.
+    vec3  toFire = uHearthPos - world.xyz;
+    float dist   = length(toFire);
+    float facing = clamp(dot(N, toFire / max(dist, 1e-3)), 0.0, 1.0);
+    float heat   = uHearthPulse * facing / (1.0 + dist * dist * 1.6);
+    vHeat = heat;
+
+    // Two rising waves. The Y term climbs, the lateral term breaks up the
+    // horizontal banding that a single wave would lay across every course.
+    float wave =
+        sin(world.y * 15.0 - uTime * 2.9 + world.x * 4.0)
+      + sin(world.y * 23.0 - uTime * 4.3 + world.z * 5.5) * 0.6;
+
+    world.xyz += N * wave * heat * uShimmer;
+
+    vWorldPos = world.xyz;
+    vWorldNormal = N;
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * Fired-clay masonry in running bond — the chimney breast and the fireplace
+ * surround.
+ *
+ * The coursing is solved in *world* space, off whichever pair of axes lies in
+ * the plane of the face being shaded. That is what lets the surround's returns
+ * course continuously with the wall behind them: two separate meshes, one
+ * unbroken bond, with no UV authoring on either.
+ *
+ *  - **Bond** — every other course steps half a brick, which is the single
+ *    detail that separates masonry from a tiled grid.
+ *  - **Joint** — the mortar is both a colour and a relief. The normal is tilted
+ *    out of the joint so it self-shades, otherwise a recessed bed reads as a
+ *    pale line painted on a flat wall.
+ *  - **Soot** — the throat of a fireplace is black. The gradient is keyed to
+ *    real distance from the fire, so the surround darkens toward the opening
+ *    and the far end of the wall stays clay.
+ */
+const HEARTH_BRICK_FRAGMENT = /* glsl */ `
+  ${SHARED_PREAMBLE}
+
+  uniform vec3  uHearthPos;
+  uniform float uHearthPulse;
+  uniform float uCourse;
+  uniform float uSoot;
+
+  varying vec3  vLocalPos;
+  varying float vHeat;
+
+  ${VALUE_NOISE_3D}
+
+  void main() {
+    vec3 N = normalize(vWorldNormal);
+
+    // Course in the plane of this face: a wall facing Z is read across X, a
+    // return facing X is read across Z.
+    bool  facingZ = abs(N.z) > abs(N.x);
+    float across  = facingZ ? vWorldPos.x : vWorldPos.z;
+    float up      = vWorldPos.y;
+
+    // Running bond. Bricks are twice as long as a course is high, so the
+    // horizontal pitch is half the vertical one.
+    float row    = floor(up * uCourse);
+    float u      = across * uCourse * 0.5 + mod(row, 2.0) * 0.5;
+    float v      = up * uCourse;
+    vec2  cell   = vec2(floor(u), row);
+    vec2  f      = vec2(fract(u), fract(v));
+
+    // Distance into the nearest joint, on both axes.
+    float jx = min(f.x, 1.0 - f.x);
+    float jy = min(f.y, 1.0 - f.y);
+    float joint = smoothstep(0.055, 0.105, min(jx, jy)); // 0 = mortar, 1 = face
+
+    // No two bricks come out of a kiln alike.
+    float seed = hash(vec3(cell, 3.7));
+    float grit = valueNoise(vWorldPos * 42.0);
+
+    vec3 clayWarm = vec3(0.276, 0.132, 0.092);
+    vec3 clayDark = vec3(0.166, 0.086, 0.072); // over-fired, near the flue
+    vec3 clay = mix(clayWarm, clayDark, seed);
+    clay = mix(clay, uPrimary * 0.34, 0.18);   // the chapter's palette carries
+    clay *= mix(0.84, 1.12, grit);
+
+    vec3 mortar = vec3(0.20, 0.185, 0.163) * mix(0.9, 1.06, grit);
+    vec3 albedo = mix(mortar, clay, joint);
+
+    float soot = uSoot * smoothstep(1.5, 0.25, length(vWorldPos - uHearthPos));
+    albedo *= mix(1.0, 0.24, soot);
+
+    // Tilt the normal out of the recessed joint. In the plane of the face, so
+    // the relief survives on the returns as well as the breast.
+    vec3 T = facingZ ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
+    float relief = 1.0 - joint;
+    vec3 Nb = normalize(
+      N
+      - T              * (f.x - 0.5) * 2.0 * relief * 0.7
+      - vec3(0.0, 1.0, 0.0) * (f.y - 0.5) * 2.0 * relief * 0.7
+    );
+
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uLightDir);
+
+    vec3  toFire   = uHearthPos - vWorldPos;
+    float fireDist = length(toFire);
+    vec3  Lf       = toFire / max(fireDist, 1e-3);
+    float fall     = uHearthPulse / (1.0 + fireDist * fireDist * 0.5);
+
+    float key  = clamp(dot(Nb, L), 0.0, 1.0) * 0.5 + 0.5;
+    float fire = clamp(dot(Nb, Lf), 0.0, 1.0) * fall;
+
+    // Fired clay is matte. Only the mortar's fine aggregate glints, and only
+    // off the fire — there is nothing else in this room bright enough.
+    vec3  Hf   = normalize(Lf + V);
+    float spec = pow(clamp(dot(Nb, Hf), 0.0, 1.0), 26.0) * joint * 0.16;
+
+    vec3 color = albedo * key * uLightColor * 0.42;
+    color += albedo * fire * 2.9;
+    color += uEmissive * spec * fall * 1.2;
+    // Masonry around the opening holds the heat and gives it back. The vertex
+    // stage already solved how much fire each point sees.
+    color += uEmissive * vHeat * 0.55;
+    color *= mix(0.9, 1.0, uTransition);
+
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
 // -----------------------------------------------------------------------------
 // Wedding — the sacred fire
 // -----------------------------------------------------------------------------
@@ -2480,6 +2687,7 @@ export type CeremonyShaderName =
   | "wildflower"
   | "walnutWood"
   | "leatherSpine"
+  | "hearthBrick"
   | "wisteriaBloom"
   | "guestSilhouette"
   | "stagePolish"
@@ -2534,6 +2742,12 @@ export const CEREMONY_SHADERS: Readonly<
   walnutWood: {
     vertexShader: GLADE_VERTEX,
     fragmentShader: WALNUT_WOOD_FRAGMENT,
+  },
+  // The only masonry with its own vertex stage: the convection shimmer needs
+  // the hearth's position, and the shared glade stage has no notion of a fire.
+  hearthBrick: {
+    vertexShader: HEARTH_BRICK_VERTEX,
+    fragmentShader: HEARTH_BRICK_FRAGMENT,
   },
   wisteriaBloom: {
     vertexShader: WISTERIA_VERTEX,
