@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# bundled single-file page emitted at the repo root by the bundler.
+# Root-anchored so a real index.html under public/ or src/ is still tracked.
+/index.html
