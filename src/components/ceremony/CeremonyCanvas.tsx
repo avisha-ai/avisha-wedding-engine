@@ -324,11 +324,21 @@ function CeremonyRig({ chapter, onSettled, intro }: CeremonyRigProps): JSX.Eleme
         shadow-camera-right={SHADOW_EXTENT}
         shadow-camera-top={SHADOW_EXTENT}
         shadow-camera-bottom={-SHADOW_EXTENT}
-        // Normal-offset biasing beats constant bias on bevelled geometry: the
-        // chamfers present grazing angles where a flat bias either peters out
-        // into acne or pushes the contact shadow off its own edge.
-        shadow-bias={-0.0006}
-        shadow-normalBias={0.022}
+        // Penumbra width. VSM blurs the depth moments in a separate pass, so
+        // softness is a property of the light rather than of the filter taps —
+        // radius sets how far the blur reaches, blurSamples how finely it is
+        // walked. 16 samples keeps the gradient clean at this map size; fewer
+        // banded visibly across the broad floor shadows.
+        shadow-radius={4}
+        shadow-blurSamples={16}
+        // Constant bias goes to zero here. It existed to fight acne under PCF's
+        // point-sampled depth compare; VSM compares distributions instead and
+        // does not have that failure mode, so keeping the old offset would only
+        // detach contact shadows from the geometry casting them. Normal-offset
+        // biasing still earns its place on the bevelled geometry, where the
+        // chamfers present grazing angles, so it stays.
+        shadow-bias={0}
+        shadow-normalBias={0.02}
       />
 
       <FadeWorld key={chapter.id} chapter={chapter} fadeRef={curFade} />
@@ -425,11 +435,22 @@ export default function CeremonyCanvas({
       style={{ position: "relative", width: "100%", height: "100%" }}
     >
       <Canvas
-        // "soft" maps to THREE.PCFSoftShadowMap — percentage-closer filtering
-        // with a wide kernel. The extra taps are affordable because exactly one
-        // light casts, and the penumbra suits candle- and daylight-lit interiors
-        // far better than the hard edge of the default map.
-        shadows="soft"
+        // "variance" maps to THREE.VSMShadowMap.
+        //
+        // Not "soft": PCFSoftShadowMap is deprecated as of three r185 and is
+        // silently rewritten to plain PCFShadowMap on the first render
+        // (WebGLShadowMap.js), so asking for it bought the hard edge of the
+        // default map while the code claimed a penumbra. VSM is the only
+        // filter still offering a real one, and the penumbra is what these
+        // candle- and daylight-lit interiors are lit for.
+        //
+        // The cost is a contract change: under VSM three renders anything with
+        // `receiveShadow` into the shadow map regardless of `castShadow`
+        // (WebGLShadowMap.js:515), so the single-caster discipline elsewhere in
+        // this scene no longer holds on its own. Meshes that must stay out of
+        // the map — the additive flame and water quads — already opt out of
+        // both flags, which is what keeps them from bleeding into it.
+        shadows="variance"
         gl={{ antialias: true, alpha: false }}
         camera={{
           position: [...chapter.camera.position],
