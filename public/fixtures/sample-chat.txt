@@ -1,0 +1,14 @@
+[13/03/23, 08:00:00] Messages and calls are end-to-end encrypted. No one outside of this chat can read them.
+13/03/2023, 08:30 - Riya added Arjun
+[13/03/23, 09:00:00] Riya: Need the mandap drape swatches today
+Also confirm the marigold count before the florist closes
+[13/03/23, 09:45:00] Arjun: Ok
+[13/03/23, 10:30:00] Riya: Can you check the caterer status?
+13/03/2023, 11:15 - Arjun: Still waiting on their reply
+[13/03/23, 11:50:00] Riya: We need to fix the seating chart too
+[13/03/23, 12:00:00] Arjun: Done, sending now
+[31/02/23, 12:05:00] Riya: this line has an impossible date and is dropped
+[13/03/23, 13:20:00] Riya: What is the status on the sangeet lighting?
+[13/03/23, 15:00:00] Arjun: Sorted
+[13/03/23, 16:40:00] Riya: Need the final headcount before we deliver the brief
+[13/03/23, 18:00:00] Arjun: Will check and update tomorrow
