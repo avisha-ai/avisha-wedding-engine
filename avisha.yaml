@@ -1,0 +1,14 @@
+# Avisha project passport — the five-file contract.
+# Honest state only. A live_url is written only after it returned 200.
+id: avisha-wedding-engine
+name: "The Atelier — Wedding Engine"
+description: "A Three.js 3D wedding experience — the atelier's demonstration that an instrument can also be beautiful."
+repo: https://github.com/avisha-ai/avisha-wedding-engine
+live_url: null
+district: Foundry
+stage: Build
+status: active
+owner: Avisha AI
+last_updated: 2026-08-13
+next_action: "Continue the build in its own session — this repo has an active writer."
+verified_at: "2026-08-13T16:00:00+05:30"
