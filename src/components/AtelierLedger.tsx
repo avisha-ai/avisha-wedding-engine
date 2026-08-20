@@ -25,6 +25,28 @@ interface LedgerReport extends NormalizedTelemetryReport {
 const CASCADE_RUN_LENGTH = 3;
 
 /**
+ * Where the instrument reads.
+ *
+ * `systemViscosity` is `log(switches + 1) * (nodes / actions)`, which lands in
+ * the teens to twenties on a real export — never near the 1.2 this tier shipped
+ * with, so PRESSURE SPIKE fired on every actionable line and meant nothing.
+ * 18 puts the cut inside the range the metric actually occupies.
+ */
+const CAVITATION_VISCOSITY = 18;
+
+/**
+ * The amber warm band, read off the per-node score.
+ *
+ * `viscosityScore` is `systemViscosity * 1.5` on an actionable line and `* 0.5`
+ * otherwise, so it carries no signal beyond `isActionable` — a file has exactly
+ * two possible scores. 25 therefore marks two situations the red tier does not:
+ * an actionable line in the 16.7-18 approach band, just under cavitation, and
+ * any idle line in a file so viscous (μ > 50) that even chatter is expensive.
+ * Above 18, actionable lines read red and the amber tier correctly yields.
+ */
+const HIGH_VISCOSITY_SCORE = 25;
+
+/**
  * Ordy's cascade pass. Derived from the engine's nodes — it reads `isActionable`
  * and `sender`, and computes nothing the engine already owns.
  *
@@ -205,8 +227,9 @@ export default function AtelierLedger() {
           /* Calibrated Visual Telemetry Streams */
           <div className="space-y-1.5 max-w-5xl mx-auto max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
             {report.ledgerNodes.map((node, index) => {
-              const isHighViscosity = node.viscosityScore > 6;
-              const isCavitationCritical = node.isActionable && report.systemViscosity > 1.2;
+              const isHighViscosity = node.viscosityScore > HIGH_VISCOSITY_SCORE;
+              const isCavitationCritical =
+                node.isActionable && report.systemViscosity > CAVITATION_VISCOSITY;
               const isOrdyAlert = node.isSequentialLeak;
 
               return (

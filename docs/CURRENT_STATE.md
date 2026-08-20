@@ -99,14 +99,23 @@ not accurate and has been corrected here rather than copied forward:
 
 ## Known gaps
 
-- **Ledger thresholds saturate.** `parseWhatsAppLog` computes
+- **Ledger thresholds recalibrated 20 August 2026 — untested against a real
+  export.** `parseWhatsAppLog` computes
   `systemViscosity = log(switches + 1) * (nodes / actions)`, which lands in the
-  teens-to-twenties on any real export. So `systemViscosity > 1.2` is true for
-  every file, making `PRESSURE SPIKE` fire on every actionable line, and
-  `viscosityScore > 6` (score is `systemViscosity * 1.5` or `* 0.5`) is true for
-  every line. Both tiers are currently always-on and carry no signal. Realistic
-  cut points are ~18 and ~25 respectively; these are unchanged pending a call on
-  where the instrument should read.
+  teens-to-twenties on any real export, so the shipped `> 1.2` and `> 6` cuts were
+  true for every line and both tiers were always-on. They are now
+  `CAVITATION_VISCOSITY = 18` and `HIGH_VISCOSITY_SCORE = 25`, named constants at
+  the top of `AtelierLedger.tsx`. What this means in practice, since
+  `viscosityScore` is only ever `systemViscosity * 1.5` or `* 0.5` and so carries
+  no signal beyond `isActionable`:
+  - μ > 18 → actionable lines read red (`PRESSURE SPIKE`).
+  - 16.7 < μ ≤ 18 → actionable lines read amber. This is the approach band, the
+    only window where the amber tier speaks about actionable traffic.
+  - μ > 50 → even non-actionable lines read amber.
+  - μ ≤ 16.7 → neither tier fires and the stream reads neutral. A short or
+    well-answered log should now look quiet, which is the point, but nobody has
+    yet confirmed the numbers against a real export. Treat 18 and 25 as a first
+    calibration, not a settled reading.
 - No test suite anywhere in the repo — no `*.test.*`, `*.spec.*`, or `__tests__`.
   The Phase 3 engine check above ran from a throwaway script in the scratchpad, so
   it proves the behaviour once and guards nothing going forward.
