@@ -23,11 +23,13 @@
  *   - Timestamps are re-emitted as local wall-clock components. The engine
  *     re-reads them as UTC, which is the behaviour it already had.
  *   - Continuation lines are folded into their message with spaces, so a
- *     multi-line message stays one node instead of vanishing.
+ *     multi-line message stays one node instead of vanishing. The unfolded body
+ *     is carried alongside as `displayText`, so the folding is a concession to
+ *     the engine's regex and not a loss of what the author actually wrote.
  */
 
 import { parseWhatsAppExport, type DateOrder } from "@/lib/whatsapp";
-import { parseWhatsAppLog, type TelemetryReport } from "./whatsapp";
+import { parseWhatsAppLog, type ChatNode, type TelemetryReport } from "./whatsapp";
 
 // -----------------------------------------------------------------------------
 // Types
@@ -53,7 +55,19 @@ export interface NormalizationStats {
   readonly dateOrder: DateOrder;
 }
 
+/**
+ * An engine node plus the body as it was actually written.
+ *
+ * `message` stays flattened, because that is what the engine parsed and scored.
+ * `displayText` keeps the author's own line breaks, so the UI can render a
+ * multi-line message as multiple lines instead of one space-joined run.
+ */
+export interface DisplayChatNode extends ChatNode {
+  readonly displayText: string;
+}
+
 export interface NormalizedTelemetryReport extends TelemetryReport {
+  readonly nodes: DisplayChatNode[];
   readonly normalization: NormalizationStats;
 }
 
@@ -108,10 +122,12 @@ function canonicalLine(date: Date, sender: string, text: string): string {
 export function normalizeWhatsAppExport(
   rawText: string,
   options: NormalizeOptions = {},
-): { canonicalText: string; stats: NormalizationStats } {
+): { canonicalText: string; displayTexts: string[]; stats: NormalizationStats } {
   const parsed = parseWhatsAppExport(rawText, { dateOrder: options.dateOrder });
 
   const lines: string[] = [];
+  // One entry per emitted line, holding that message's original line breaks.
+  const displayTexts: string[] = [];
   let systemNotices = 0;
   let multiLineFolded = 0;
   let droppedUndatable = 0;
@@ -134,10 +150,12 @@ export function normalizeWhatsAppExport(
     if (text !== entry.text.trim()) multiLineFolded += 1;
 
     lines.push(canonicalLine(entry.timestamp, sender, text));
+    displayTexts.push(entry.text.trim());
   }
 
   return {
     canonicalText: lines.join("\n"),
+    displayTexts,
     stats: {
       totalEntries: parsed.messages.length,
       messages: lines.length,
@@ -162,6 +180,18 @@ export function analyzeWhatsAppExport(
   rawText: string,
   options: NormalizeOptions = {},
 ): NormalizedTelemetryReport {
-  const { canonicalText, stats } = normalizeWhatsAppExport(rawText, options);
-  return { ...parseWhatsAppLog(canonicalText), normalization: stats };
+  const { canonicalText, displayTexts, stats } = normalizeWhatsAppExport(rawText, options);
+  const report = parseWhatsAppLog(canonicalText);
+
+  // Every canonical line is written to match the engine's regex exactly, so the
+  // nodes come back one-per-line and in order. The length check is the cheap
+  // guard against that assumption ever silently breaking: if it does, the node
+  // falls back to its own flattened body rather than borrowing someone else's.
+  const aligned = report.nodes.length === displayTexts.length;
+  const nodes: DisplayChatNode[] = report.nodes.map((node, i) => ({
+    ...node,
+    displayText: aligned ? displayTexts[i] : node.message,
+  }));
+
+  return { ...report, nodes, normalization: stats };
 }
