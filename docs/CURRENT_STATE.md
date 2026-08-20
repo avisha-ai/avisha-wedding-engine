@@ -4,13 +4,13 @@ The honest current state of Avisha Wedding Engine.
 Updated by Pink Baby after every completed phase build.
 
 **Last updated:** 20 August 2026
-**Updated by:** Phase 3 Interface Completion & Final Sync
+**Updated by:** Phase 3 Interface Completion & Final Sync (browser check folded in)
 
 ---
 
 ## What exists and works
 
-### Exhibition Core — ✅ BUILDS CLEAN, ⚠️ UNEXERCISED IN THE BROWSER (Phase 2 & 3 Unified)
+### Exhibition Core — ✅ BUILDS CLEAN, ✅ RENDERS IN THE BROWSER (Phase 2 & 3 Unified)
 
 - **Telemetry Ingestion:** `src/lib/whatsapp/parseExport.ts` — 360 lines. Infers
   `DMY | MDY | YMD` from the export itself (`inferDateOrder`, falls back to `DMY`),
@@ -76,6 +76,31 @@ Updated by Pink Baby after every completed phase build.
   and the three empty-ingest branches each returned their distinct alert.
   This was a scratch harness, not a committed test — see Known gaps.
 
+### Browser verification — 20 August 2026
+
+First time the instrument has been driven rather than reasoned about.
+`heavy_chat.txt` (124 nodes) dropped into the intake port at `localhost:3000`.
+
+Confirmed by eye:
+
+- Layout holds, typography tracks.
+- **`LN_004` wraps across three lines and keeps its grid alignment** — the line
+  number, sender column and body stay on their columns against a tall row. This
+  is the Phase 3 change working: the same node under the old `truncate` was one
+  clipped line.
+- Telemetry dashboard reads **1560 MIN Head Pressure** and **21.3 μ Viscosity**.
+
+The two dashboard figures match what the engine computed for that fixture in a
+standalone harness run — `pressure=1560min`, `mu=21.3`. Parser, normalizer, math
+engine and render surface therefore agree end to end on the same input. That is
+the strongest claim this repo can currently make, and it is now made honestly.
+
+Observed on this pass but *not* individually confirmed by the operator, so still
+open: the `ORDY: CASCADE CAVITATION` badge on the four-message run at the tail of
+the fixture, the 60vh scroller under a 124-node list, the 28 `PRESSURE SPIKE`
+lines the new cut point predicts, and the `SYSTEM_ALERT` banner (which needs
+`sample-chat-system-only.txt`, a separate drop).
+
 ### Not in the original manifest, but present in the repo
 
 - **Ceremony subsystem:** `src/app/ceremony/page.tsx` plus 11 files under
@@ -115,17 +140,25 @@ not accurate and has been corrected here rather than copied forward:
   - μ ≤ 16.7 → neither tier fires and the stream reads neutral. A short or
     well-answered log should now look quiet, which is the point, but nobody has
     yet confirmed the numbers against a real export. Treat 18 and 25 as a first
-    calibration, not a settled reading.
+    calibration, not a settled reading. The 20 August browser run put a real
+    number on it: `heavy_chat.txt` at mu 21.3 flags 28 of 124 lines rather than
+    all 124, and `sample-chat.txt` at mu 4 now stays fully quiet.
 - No test suite anywhere in the repo — no `*.test.*`, `*.spec.*`, or `__tests__`.
   The Phase 3 engine check above ran from a throwaway script in the scratchpad, so
   it proves the behaviour once and guards nothing going forward.
-- The instrument has been verified by build and by direct engine calls, **not by
-  driving the UI**. Nobody has dropped a real WhatsApp export into the browser and
-  watched the wrap, the scroll, or the alert banner render.
+- **Browser verification is real but partial.** The wrap, the layout and the two
+  headline metrics were confirmed by eye (see above). The cascade badge, the
+  scroller, the red-tier count and the fault banner were not individually checked,
+  and no *real* WhatsApp export has been dropped in — only generated fixtures, all
+  of which this repo authored and therefore all of which share its assumptions
+  about what an export looks like.
 - `src/app/ledger/page.tsx` metadata title (`Instrument_001`) and the component
   header (`EXHIBITION_001`) disagree.
-- Root `index.html` (1.2 MB) is a bundler artifact and is git-ignored via the
-  root-anchored `/index.html` rule.
+- Root `index.html` (1.2 MB) and `avisha-cinematic-standalone.html` (451 KB) are
+  bundler artifacts, git-ignored via root-anchored `/index.html` and
+  `/avisha-cinematic-standalone.html` rules. Root-anchored on purpose: a real
+  `index.html` under `public/` or `src/` must stay tracked. Do not widen either
+  rule to a bare `*.html` glob — that would swallow the `.dc.html` design files.
 - `Avisha Cinematic.dc.html` and `Avisha Planner.dc.html` are untracked design-engine
   work, deliberately not ignored and not staged.
 

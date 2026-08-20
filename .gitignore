@@ -40,6 +40,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# bundled single-file page emitted at the repo root by the bundler.
-# Root-anchored so a real index.html under public/ or src/ is still tracked.
+# bundled single-file pages emitted at the repo root by the bundler.
+# Both rules are root-anchored so a real index.html under public/ or src/, or a
+# hand-authored standalone elsewhere in the tree, is still tracked. The `*.dc.html`
+# design-engine files at the root are deliberately NOT covered here: they are live
+# work, not build output.
 /index.html
+/avisha-cinematic-standalone.html
