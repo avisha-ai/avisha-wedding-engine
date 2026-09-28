@@ -42,6 +42,8 @@ import {
 
 import type { ChapterId } from "./ceremonyConfig";
 
+import { COUPLE_MONOGRAM, COUPLE_PAIR_SHORT } from "@/lib/branding";
+
 // -----------------------------------------------------------------------------
 // Public API
 // -----------------------------------------------------------------------------
@@ -201,7 +203,7 @@ export default function InvitationOverlay({
             Together with their families
           </div>
           <div style={{ fontSize: "1.35rem", fontWeight: 600, marginTop: "0.35rem" }}>
-            Avi &amp; Isha
+            {COUPLE_PAIR_SHORT}
           </div>
         </header>
 
@@ -385,11 +387,11 @@ function WaxSeal({
             textAnchor="middle"
             dominantBaseline="central"
             fontFamily="Georgia, serif"
-            fontSize="30"
+            fontSize="24"
             fontWeight="700"
             fill="rgba(86,56,12,0.72)"
           >
-            A
+            {COUPLE_MONOGRAM}
           </text>
         </svg>
       ))}

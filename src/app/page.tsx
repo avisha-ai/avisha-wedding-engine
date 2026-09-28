@@ -15,6 +15,8 @@
  */
 
 import { useRouter } from "next/navigation";
+
+import { COUPLE_PAIR } from "@/lib/branding";
 import { useCallback, useState, type FormEvent, type JSX } from "react";
 
 /**
@@ -78,7 +80,7 @@ export default function Home(): JSX.Element {
         >
           Welcome to the Wedding of
           <span className="mt-2 block" style={{ color: GOLD }}>
-            Mayur and Avani
+            {COUPLE_PAIR}
           </span>
         </h1>
 

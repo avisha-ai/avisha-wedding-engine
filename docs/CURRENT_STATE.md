@@ -245,6 +245,46 @@ ledger string (`CAVITATION`, `PRESSURE SPIKE`, `Viscosity`, `INGEST_FAULT`,
 There were no passcode or passphrase fields anywhere in `src/` to remove — a
 grep for `passcode|passphrase|password|access code` returns nothing.
 
+### White-label name matrix — 28 September 2026
+
+`src/lib/branding.ts` is now the single source for every couple-facing name.
+Edit `COUPLE` and the whole platform re-brands.
+
+| Site | Was | Now |
+|---|---|---|
+| `src/app/page.tsx` | `Mayur and Avani` | `{COUPLE_PAIR}` → "Bride and Groom" |
+| `src/app/layout.tsx` metadata | `The Wedding of Mayur and Avani` | `` `The Wedding of ${COUPLE_PAIR}` `` |
+| `InvitationOverlay.tsx` header | `Avi &amp; Isha` | `{COUPLE_PAIR_SHORT}` → "Bride & Groom" |
+| `InvitationOverlay.tsx` wax seal | monogram `A` | `{COUPLE_MONOGRAM}` → "BG" |
+
+The three literals had already drifted — the landing route said *Mayur and
+Avani* while the invitation card said *Avi & Isha*. Centralising them is what
+stops that recurring, and is the actual deliverable behind "name matrix".
+
+The seal's monogram was one glyph at `fontSize="30"`; it is now two derived from
+the initials, so the type size dropped to `24` to keep it inside the seal.
+
+**Three things deliberately left alone, each of which a global rename would have
+broken:**
+
+- `src/lib/agents/AviMascot.ts` — "Avi" there is the build-companion mascot, a
+  presentation-layer character with ~25 references, not the bride. Verified
+  unmodified against `HEAD`. (Separately noted: nothing imports the mascot —
+  `SimulationOverlay` pulls `AgentMesh` and friends from the barrel but never
+  the mascot — so it tree-shakes out of the build. Pre-existing.)
+- `AVISHA // EXHIBITION_001` in the ledger header, and the `avisha.guestName`
+  storage key. Atelier mark, not a couple name.
+- `public/fixtures/*.txt` sender names. Those feed the ledger's speaker-switch
+  count, and renaming them unevenly would move the measured viscosity figures
+  the Phase 3 verification rests on.
+
+Verified against `next start`: `/` renders "Bride and Groom", `<title>` reads
+"The Wedding of Bride and Groom", `Mayur` and `Avani` appear nowhere in the
+served HTML, `Avi &` and `Isha` appear nowhere in the client bundle, and all
+five routes return 200. `COUPLE_PAIR_SHORT` is a template literal, so the
+bundle carries "Bride" and "Groom" separately rather than the joined string —
+expected, not a miss.
+
 ## Known gaps
 
 - **Ledger thresholds recalibrated 20 August 2026 — untested against a real
@@ -272,6 +312,11 @@ grep for `passcode|passphrase|password|access code` returns nothing.
   been recorded anywhere. "60 FPS on mobile" is not a claim this repo can make.
   Measuring it needs a real device, or at minimum Chrome DevTools device
   emulation with CPU/GPU throttling and the FPS meter on.
+- **The invitation card and wax seal have not been looked at since the rename.**
+  The monogram went from one glyph to two and the type size was dropped to
+  compensate, but whether "BG" sits correctly inside the seal is unverified —
+  it is a geometry judgement and the Chrome extension has been disconnected all
+  day. Same for the invitation header at its new string length.
 - **Nobody has seen the landing card.** Its content is confirmed in the served
   HTML, but the Chrome extension has been disconnected all day, so the actual
   composition — type scale, the gold rule, the button's hover lift, how it holds

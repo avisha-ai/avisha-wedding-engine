@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Barlow, Geist, Geist_Mono, Marcellus } from "next/font/google";
 import "./globals.css";
 
+import { COUPLE_PAIR } from "@/lib/branding";
+
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -36,7 +38,7 @@ const barlow = Barlow({
 });
 
 export const metadata: Metadata = {
-  title: "The Wedding of Mayur and Avani",
+  title: `The Wedding of ${COUPLE_PAIR}`,
   description: "An invitation. Enter your name to step inside.",
 };
 
