@@ -3,7 +3,9 @@ import type { Metadata } from "next";
 import AtelierLedger from "@/components/AtelierLedger";
 
 export const metadata: Metadata = {
-  title: "Avisha // Instrument_001",
+  // Matches the component header and this file's own docblock below.
+  // "Instrument_001" was the odd one out of the three; it loses.
+  title: "Avisha // EXHIBITION_001",
   description: "Information viscosity & stream cavitation monitor.",
 };
 

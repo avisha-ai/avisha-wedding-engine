@@ -17,6 +17,7 @@
  * `ceremonyConfig.ts` — the single source of truth.
  */
 
+import { PerformanceMonitor } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Bloom, EffectComposer } from "@react-three/postprocessing";
 import {
@@ -110,6 +111,47 @@ function prefersReducedMotion(): boolean {
  * Cropping tightly is what keeps 1024² sharp.
  */
 const SHADOW_EXTENT = 5.5;
+
+// -----------------------------------------------------------------------------
+// Device-adaptive render quality
+// -----------------------------------------------------------------------------
+
+/**
+ * Resolution floor. Below this the procedural textures stop resolving and the
+ * VSM penumbra turns to mush, so the scene sheds effects rather than going any
+ * softer than this.
+ */
+const DPR_FLOOR = 0.75;
+
+/**
+ * Resolution ceiling, per device class.
+ *
+ * `devicePixelRatio` on a modern phone is 3. Honouring it asks this scene to
+ * rasterise nine times the CSS pixels, and it pays that cost three times over:
+ * the colour pass, the VSM shadow map, and the bloom mip chain. Capping the
+ * ceiling on a handheld is by far the largest lever available here, and at
+ * phone viewing distance 1.5 is not visibly softer than 2.
+ */
+const DPR_CEILING_HANDHELD = 1.5;
+const DPR_CEILING_DESKTOP = 2;
+
+/**
+ * True for devices whose primary pointer is coarse — phones and tablets.
+ *
+ * Deliberately a capability query rather than a user-agent sniff: what this
+ * needs to know is "is there a handheld GPU behind this viewport", and
+ * `(pointer: coarse)` is the closest honest proxy the platform exposes. It is
+ * evaluated once, in a `useState` initialiser: this component is only ever
+ * reached through `CeremonyCanvasClient`, which imports it with `ssr: false`,
+ * so there is no server pass for the value to disagree with.
+ */
+function isHandheld(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches
+  );
+}
 
 // -----------------------------------------------------------------------------
 // Fade wrapper — drives one world's opacity from a shared numeric ref
@@ -368,6 +410,33 @@ export default function CeremonyCanvas({
 }: CeremonyCanvasProps): JSX.Element {
   const [chapterId, setChapterId] = useState<ChapterId>(initialChapter);
   const [audioOn, setAudioOn] = useState(false);
+
+  // Device class is fixed for the life of the canvas; the resolution it drives
+  // is not. `dpr` starts at the class ceiling and PerformanceMonitor walks it
+  // down toward DPR_FLOOR when frames start overrunning the refresh interval,
+  // so a slow phone loses pixels before it loses frames.
+  const [handheld] = useState(isHandheld);
+  const [dprCeiling] = useState(() =>
+    isHandheld() ? DPR_CEILING_HANDHELD : DPR_CEILING_DESKTOP,
+  );
+  const [dpr, setDpr] = useState(dprCeiling);
+
+  // Bloom is the first thing dropped if dropping resolution was not enough.
+  // PerformanceMonitor only calls onFallback after the frame time has failed
+  // to recover across several adjustments, so this is a last resort, not a
+  // guess made up front about what the device can do.
+  const [bloomOn, setBloomOn] = useState(true);
+
+  const handleQualityChange = useCallback(
+    ({ factor }: { factor: number }) => {
+      // factor is 0..1 across the monitor's own bounds; map it onto the
+      // resolution band and round so a jittering factor cannot thrash the
+      // renderer's drawing-buffer resize.
+      const next = DPR_FLOOR + factor * (dprCeiling - DPR_FLOOR);
+      setDpr(Math.round(next * 20) / 20);
+    },
+    [dprCeiling],
+  );
   const soundscapeRef = useRef<CeremonySoundscape | null>(null);
 
   const chapter = CEREMONY_CHAPTERS[chapterId];
@@ -451,25 +520,38 @@ export default function CeremonyCanvas({
         // the map — the additive flame and water quads — already opt out of
         // both flags, which is what keeps them from bleeding into it.
         shadows="variance"
-        gl={{ antialias: true, alpha: false }}
+        // MSAA is dropped on handhelds: at DPR_CEILING_HANDHELD the buffer is
+        // already supersampled relative to the CSS pixel, which covers most of
+        // what the multisample was buying, and the bandwidth it costs is the
+        // scarcest thing on a tile-based mobile GPU.
+        gl={{ antialias: !handheld, alpha: false }}
         camera={{
           position: [...chapter.camera.position],
           fov: chapter.camera.fov,
         }}
-        dpr={[1, 2]}
+        dpr={dpr}
       >
+        {/* Watches real frame times and hands back a 0..1 factor. Must live
+            inside the Canvas — it drives off useFrame. */}
+        <PerformanceMonitor
+          onChange={handleQualityChange}
+          onFallback={() => setBloomOn(false)}
+        />
+
         <CeremonyRig chapter={chapter} onSettled={handleSettled} intro={intro} />
 
         {/* Bloom — only bright specular glints, emissive lanterns, and fire
             cross the luminance threshold, so the gold and flames actually glow. */}
-        <EffectComposer>
-          <Bloom
-            mipmapBlur
-            intensity={0.9}
-            luminanceThreshold={0.55}
-            luminanceSmoothing={0.25}
-          />
-        </EffectComposer>
+        {bloomOn && (
+          <EffectComposer>
+            <Bloom
+              mipmapBlur
+              intensity={0.9}
+              luminanceThreshold={0.55}
+              luminanceSmoothing={0.25}
+            />
+          </EffectComposer>
+        )}
       </Canvas>
 
       {/* Interactive Simulation Overlay — drives the Agent Mesh live. */}

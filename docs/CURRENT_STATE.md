@@ -3,8 +3,8 @@
 The honest current state of Avisha Wedding Engine.
 Updated by Pink Baby after every completed phase build.
 
-**Last updated:** 20 August 2026
-**Updated by:** Phase 3 Interface Completion & Final Sync (browser check folded in)
+**Last updated:** 28 September 2026
+**Updated by:** Phase 3 close-out — adaptive render quality, response headers, deployment
 
 ---
 
@@ -60,8 +60,11 @@ Updated by Pink Baby after every completed phase build.
   - 1 encryption notice, no traffic → `1 system notice(s) and no participant traffic.`
   - empty file → the generic `no recognizable operational telemetry.`
 - **Header reads `AVISHA // EXHIBITION_001`**, matching the footer's active layer.
-  Note `src/app/ledger/page.tsx` metadata still says `Instrument_001`; the two are
-  now inconsistent and one of them should win.
+  Resolved 28 September 2026: `src/app/ledger/page.tsx` metadata said
+  `Instrument_001` and was the odd one out against both the component header and
+  that file's own docblock (`/ledger` — Exhibition 001). `EXHIBITION_001` won.
+  Confirmed on a served response: `/ledger` returns
+  `<title>Avisha // EXHIBITION_001</title>`.
 
 ### Verification actually performed (20 August 2026)
 
@@ -114,13 +117,62 @@ lines the new cut point predicts, and the `SYSTEM_ALERT` banner (which needs
 
 **None.** There are no `.env*` files in the repo.
 
-The manifest's "Vercel Deployment Sync: Enabled via root `.gitignore` parameters" is
-not accurate and has been corrected here rather than copied forward:
+The manifest's "Vercel Deployment Sync: Enabled via root `.gitignore` parameters"
+was never accurate and is left corrected here:
 
 - `.gitignore` cannot enable a deployment. Its `.vercel` line is stock
   create-next-app boilerplate, not evidence of a connection.
-- There is no `.vercel/` directory and no linked Vercel project. Pushing `main`
-  currently deploys nothing.
+- Deployment state as of 28 September 2026 is recorded under "Deployment" below.
+  Until that date there was no linked Vercel project and pushing `main` deployed
+  nothing.
+
+### Phase 3 close-out — 28 September 2026
+
+Three changes, each verified as far as this machine allows.
+
+- **Device-adaptive render quality** (`CeremonyCanvas.tsx`). The canvas shipped
+  `dpr={[1, 2]}`, `antialias: true`, VSM shadows and an always-on bloom pass.
+  On a phone reporting `devicePixelRatio` 3 that is a fixed cost paid three
+  times — colour pass, shadow map, bloom mip chain — with no way to shed it.
+  Now:
+  - `DPR_CEILING_HANDHELD = 1.5` vs `DPR_CEILING_DESKTOP = 2`, chosen once at
+    mount from `matchMedia("(pointer: coarse)")`. A capability query, not a
+    user-agent sniff. Safe in a `useState` initialiser because this component
+    is only reached through `CeremonyCanvasClient`, which imports it with
+    `ssr: false` — there is no server pass to disagree with.
+  - drei's `<PerformanceMonitor>` inside the Canvas maps its `0..1` factor onto
+    `[DPR_FLOOR = 0.75, ceiling]`, rounded to 1/20 so a jittering factor cannot
+    thrash the drawing-buffer resize.
+  - `onFallback` drops the `<EffectComposer>` entirely. Last resort, after the
+    resolution ladder has failed to recover the frame time.
+  - MSAA is off on handhelds; at DPR 1.5 the buffer is already supersampled
+    relative to the CSS pixel.
+
+  **Not measured.** No phone was driven, and no FPS number was taken on any
+  device. What is verified is that it typechecks, lints, builds, and that
+  `PerformanceMonitor` reaches the client bundle. Whether this holds 60 FPS on
+  any particular handset is an open question, not a claim — see Known gaps.
+
+- **Response headers** (`next.config.ts`). `poweredByHeader: false` plus
+  `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: SAMEORIGIN` and
+  a `Permissions-Policy` on `/:path*`. Verified against a real `next start`
+  response, not read off the source: `curl -I /ceremony` returns all four and no
+  `x-powered-by`.
+
+  These are in `next.config.ts` rather than a `vercel.json` deliberately. Next
+  owns the response for every route here, `headers()` is the framework hook for
+  it, and it applies under `next dev`/`next start` too, so what is tested
+  locally is what ships. A `vercel.json` would only be right for platform
+  concerns Next has no say over — regions, crons, non-Next routes. This app has
+  none, so there is no `vercel.json`.
+
+  `Permissions-Policy` deliberately omits `autoplay`. The soundscape is
+  synthesised in-process by the Web Audio API and fetches nothing, so no header
+  can influence a cross-fade — but restricting `autoplay` could block the
+  `AudioContext` resume behind the soundscape toggle. The one real interaction
+  between headers and the audio engine is a way to break it.
+
+- **`Instrument_001` retired** in favour of `EXHIBITION_001` (above).
 
 ## Known gaps
 
@@ -143,6 +195,17 @@ not accurate and has been corrected here rather than copied forward:
     calibration, not a settled reading. The 20 August browser run put a real
     number on it: `heavy_chat.txt` at mu 21.3 flags 28 of 124 lines rather than
     all 124, and `sample-chat.txt` at mu 4 now stays fully quiet.
+- **Adaptive render quality is unmeasured on real hardware.** The ladder
+  (DPR ceiling by device class -> PerformanceMonitor -> drop bloom) is a sound
+  shape and is the right lever, but no handset has run it and no frame time has
+  been recorded anywhere. "60 FPS on mobile" is not a claim this repo can make.
+  Measuring it needs a real device, or at minimum Chrome DevTools device
+  emulation with CPU/GPU throttling and the FPS meter on.
+- **The browser pass for this change did not happen.** The Chrome extension was
+  disconnected for the whole session, so `/ceremony` was never driven with the
+  new code. Verification stopped at: typecheck, lint, build, a served 200 with
+  the placeholder background present, and `PerformanceMonitor` confirmed in the
+  emitted client chunk. Nobody has seen the adaptive canvas render.
 - No test suite anywhere in the repo — no `*.test.*`, `*.spec.*`, or `__tests__`.
   The Phase 3 engine check above ran from a throwaway script in the scratchpad, so
   it proves the behaviour once and guards nothing going forward.
@@ -152,8 +215,6 @@ not accurate and has been corrected here rather than copied forward:
   and no *real* WhatsApp export has been dropped in — only generated fixtures, all
   of which this repo authored and therefore all of which share its assumptions
   about what an export looks like.
-- `src/app/ledger/page.tsx` metadata title (`Instrument_001`) and the component
-  header (`EXHIBITION_001`) disagree.
 - Root `index.html` (1.2 MB) and `avisha-cinematic-standalone.html` (451 KB) are
   bundler artifacts, git-ignored via root-anchored `/index.html` and
   `/avisha-cinematic-standalone.html` rules. Root-anchored on purpose: a real
