@@ -1,31 +1,55 @@
 import type { NextConfig } from "next";
 
 /**
- * Response headers for this app live in `vercel.json`, not here.
+ * Design-engine documents, served as routes.
  *
- * Next's own `headers()` hook would also work, and has the advantage of
- * applying under `next dev` / `next start` so the set can be verified with
- * `curl` before it ships. `vercel.json` is the chosen home anyway: it is where
- * the platform expects route configuration, and it keeps the header set in one
- * declarative file instead of behind a build step. The trade is that the
- * headers cannot be checked against a local response — the first real proof
- * they are correct is a `curl -I` against the deployment.
+ * `Avisha Cinematic.dc.html` and `Avisha Planner.dc.html` are main design-engine
+ * output. They now live in `public/assets/design/` and are served under clean
+ * paths by the rewrites below.
  *
- * `poweredByHeader` stays here because there is no `vercel.json` equivalent:
- * `x-powered-by` is emitted by Next itself, so only Next can suppress it.
+ * Rewrites, not redirects: a rewrite proxies the document while the address bar
+ * keeps reading `/planner`, which is what "visiting /planner loads the planner
+ * document" asks for. A redirect would bounce the visitor to the raw
+ * `.dc.html` URL and put the percent-encoded filename in front of them.
  *
- * A note on the ambient soundscape, since it is the one place headers and audio
- * genuinely touch. `src/components/ceremony/ceremonyAudio.ts` synthesises every
- * chapter bed with the Web Audio API and cross-fades between them on gain nodes
- * in-process. Nothing is fetched — there are no audio files in `public/` — so
- * no cache, CORS or content header can affect a cross-fade. The only header
- * that could reach the audio engine at all is `Permissions-Policy: autoplay`,
- * and restricting it risks blocking the `AudioContext` resume behind the
- * soundscape toggle. It is deliberately absent from the `vercel.json` list.
+ * Returned as a plain array, so these are `afterFiles` rewrites — per the
+ * bundled docs (`05-config/01-next-config-js/rewrites.md`), an array is
+ * "applied after checking the filesystem (pages and `/public` files)", and
+ * "the first rewrite that resolves to a static file, page, or dynamic route is
+ * served". A real page at `/planner` would therefore still win; nothing
+ * currently claims either path.
+ *
+ * These live here rather than in `vercel.json` for one reason: `next.config.ts`
+ * rewrites apply under `next dev` / `next start`, so they can be verified with
+ * `curl` before shipping. The header set in `vercel.json` cannot be, and that
+ * asymmetry is deliberate.
  */
+
+/** Where the design engine's documents are served from, URL-encoded. */
+const DESIGN_DIR = "/assets/design";
+const CINEMATIC_DOC = `${DESIGN_DIR}/Avisha%20Cinematic.dc.html`;
+const PLANNER_DOC = `${DESIGN_DIR}/Avisha%20Planner.dc.html`;
+
 const nextConfig: NextConfig = {
   // Drop `x-powered-by`: it names the framework and version to no one's benefit.
   poweredByHeader: false,
+
+  async rewrites() {
+    return [
+      { source: "/planner", destination: PLANNER_DOC },
+      { source: "/cinematic", destination: CINEMATIC_DOC },
+
+      // The cinematic document links to the planner by its original root-relative
+      // filename (`href="Avisha Planner.dc.html"`). Served at `/cinematic`, that
+      // resolves to `/Avisha Planner.dc.html` and would 404. Catching it here
+      // keeps the cross-link working without editing the document itself —
+      // these files are hand-authored design-engine work and are not ours to
+      // rewrite. Both spellings are mapped because the browser sends the
+      // percent-encoded form and the matcher sees the decoded path.
+      { source: "/Avisha Planner.dc.html", destination: PLANNER_DOC },
+      { source: "/Avisha%20Planner.dc.html", destination: PLANNER_DOC },
+    ];
+  },
 };
 
 export default nextConfig;

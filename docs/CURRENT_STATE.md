@@ -183,6 +183,36 @@ Three changes, each verified as far as this machine allows.
 
 - **`Instrument_001` retired** in favour of `EXHIBITION_001` (above).
 
+### Design-engine documents on routes — 28 September 2026
+
+`public/assets/design/` now holds the two `.dc.html` design-engine documents,
+served under clean paths by `rewrites()` in `next.config.ts`:
+
+| Route | Serves | Verified |
+|---|---|---|
+| `/planner` | `Avisha Planner.dc.html` | 200, 75140 B, sha256 matches source |
+| `/cinematic` | `Avisha Cinematic.dc.html` | 200, 60058 B, sha256 matches source |
+| `/Avisha%20Planner.dc.html` | the planner doc | 200 — keeps the cinematic doc's cross-link alive |
+
+Rewrites rather than redirects, so the address bar keeps reading `/planner`
+instead of bouncing the visitor to a percent-encoded `.dc.html` URL. Returned as
+a plain array, which the bundled docs define as `afterFiles` — checked after the
+filesystem, so a real page at either path would still win. `/`, `/ceremony` and
+`/ledger` were re-checked after the change and all still return 200.
+
+They are in `next.config.ts` and not `vercel.json` on purpose: config there can
+be exercised by `curl` against `next start`, which is how the table above was
+filled in. The `vercel.json` header set still cannot be.
+
+**These documents are missing their design system.** Both reference a shared
+`_ds/industry-aa085960.../` bundle plus `support.js` (and `image-slot.js` for
+the planner). None of it exists anywhere in this repo or in the wider
+`~/Documents/Avisha` tree, and every one of those paths was confirmed 404 on the
+running server. What renders is each document's own inline CSS (3.4 KB
+cinematic, 6.7 KB planner) and inline script — real content, but not the
+intended presentation. This is a pre-existing gap the move surfaced rather than
+caused; the files were equally incomplete at the root. See Known gaps.
+
 ## Known gaps
 
 - **Ledger thresholds recalibrated 20 August 2026 — untested against a real
@@ -210,6 +240,14 @@ Three changes, each verified as far as this machine allows.
   been recorded anywhere. "60 FPS on mobile" is not a claim this repo can make.
   Measuring it needs a real device, or at minimum Chrome DevTools device
   emulation with CPU/GPU throttling and the FPS meter on.
+- **`/planner` and `/cinematic` render without their design system.** The
+  `_ds/` bundle, `support.js` and `image-slot.js` that both documents reference
+  are not in the repo and not on the machine. Until that bundle is placed at
+  `public/assets/design/_ds/...` (or the documents are re-exported with it
+  inlined), both routes serve structurally-correct but unstyled-by-the-system
+  pages. Nobody has looked at either route in a browser — the Chrome extension
+  has been disconnected all day — so "renders real content" is an inference from
+  3.4 KB and 6.7 KB of inline CSS, not something seen.
 - **The `vercel.json` headers have never been served.** They cannot be
   exercised locally by design, and no deployment exists to exercise them
   remotely. First action after a successful deploy: `curl -I <live_url>` and
@@ -233,8 +271,16 @@ Three changes, each verified as far as this machine allows.
   `/avisha-cinematic-standalone.html` rules. Root-anchored on purpose: a real
   `index.html` under `public/` or `src/` must stay tracked. Do not widen either
   rule to a bare `*.html` glob — that would swallow the `.dc.html` design files.
-- `Avisha Cinematic.dc.html` and `Avisha Planner.dc.html` are untracked design-engine
-  work, deliberately not ignored and not staged.
+- `Avisha Cinematic.dc.html` and `Avisha Planner.dc.html` **moved into
+  `public/assets/design/` and are now tracked** (28 September 2026) — the
+  integration their earlier "leave untracked at the root" handling was always
+  waiting for. Bytes are unchanged across the move, verified by sha256 on both
+  sides. They had to be committed: `public/` is a build input, and an untracked
+  file there would 404 on the deployment.
+
+  The root-anchored `.gitignore` rules did their job here — `git check-ignore`
+  confirms neither file is swallowed in its new home, which is precisely what a
+  `*.html` glob would have broken.
 
 ---
 *Pink Baby: update this file after every completed build step.*
