@@ -153,18 +153,27 @@ Three changes, each verified as far as this machine allows.
   `PerformanceMonitor` reaches the client bundle. Whether this holds 60 FPS on
   any particular handset is an open question, not a claim — see Known gaps.
 
-- **Response headers** (`next.config.ts`). `poweredByHeader: false` plus
-  `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: SAMEORIGIN` and
-  a `Permissions-Policy` on `/:path*`. Verified against a real `next start`
-  response, not read off the source: `curl -I /ceremony` returns all four and no
-  `x-powered-by`.
+- **Response headers** (`vercel.json`). `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`,
+  `X-Frame-Options: SAMEORIGIN` and a `Permissions-Policy`, all on `/(.*)`.
+  `poweredByHeader: false` stays in `next.config.ts` because `x-powered-by` is
+  emitted by Next itself and only Next can suppress it.
 
-  These are in `next.config.ts` rather than a `vercel.json` deliberately. Next
-  owns the response for every route here, `headers()` is the framework hook for
-  it, and it applies under `next dev`/`next start` too, so what is tested
-  locally is what ships. A `vercel.json` would only be right for platform
-  concerns Next has no say over — regions, crons, non-Next routes. This app has
-  none, so there is no `vercel.json`.
+  These were briefly in `next.config.ts` under `headers()` and were moved to
+  `vercel.json` on the operator's explicit instruction. Both are valid — Vercel's
+  own CDN-cache docs present them as alternatives for the same job — and they are
+  deliberately **not** used together, because a header defined in both places is
+  applied twice.
+
+  **The trade is verifiability, and it is a real cost.** Under `headers()` the
+  set could be checked locally: `curl -I` against `next start` returned all four.
+  `vercel.json` is applied by the platform, not by `next start`, so that check
+  now returns nothing — confirmed on 28 September, and expected rather than a
+  fault. What is verified today is that the file parses, that its shape matches
+  the documented schema (`source` + `key`/`value` pairs), and that
+  `x-powered-by` is still absent locally. **That the four headers actually land
+  is unproven** and stays unproven until something is deployed and answers a
+  `curl -I`. See Known gaps.
 
   `Permissions-Policy` deliberately omits `autoplay`. The soundscape is
   synthesised in-process by the Web Audio API and fetches nothing, so no header
@@ -201,6 +210,10 @@ Three changes, each verified as far as this machine allows.
   been recorded anywhere. "60 FPS on mobile" is not a claim this repo can make.
   Measuring it needs a real device, or at minimum Chrome DevTools device
   emulation with CPU/GPU throttling and the FPS meter on.
+- **The `vercel.json` headers have never been served.** They cannot be
+  exercised locally by design, and no deployment exists to exercise them
+  remotely. First action after a successful deploy: `curl -I <live_url>` and
+  confirm all four are present.
 - **The browser pass for this change did not happen.** The Chrome extension was
   disconnected for the whole session, so `/ceremony` was never driven with the
   new code. Verification stopped at: typecheck, lint, build, a served 200 with
