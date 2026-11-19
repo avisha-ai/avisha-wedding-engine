@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import CeremonyCanvasClient from "@/components/ceremony/CeremonyCanvasClient";
+import CeremonyExperience from "@/components/ceremony/CeremonyExperience";
 
 export const metadata: Metadata = {
   title: "Living Ceremony Layer",
@@ -11,13 +11,29 @@ export const metadata: Metadata = {
  * use ← / → (or the on-screen controls) to move between the 7 chapters.
  *
  * This is a Server Component, so it reaches the WebGL scene through
- * <CeremonyCanvasClient />, which is where the `ssr: false` dynamic import is
- * allowed to live.
+ * <CeremonyExperience /> → <CeremonyCanvasClient />, which is where the
+ * `ssr: false` dynamic import is allowed to live.
+ *
+ * `?w=` optionally carries a share token from the planner (see
+ * `src/lib/wedding/store.ts`). In Next 16 `searchParams` is a Promise.
  */
-export default function CeremonyPage() {
+export default async function CeremonyPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const { w } = await searchParams;
+  const token = typeof w === "string" ? w : undefined;
   return (
-    <main style={{ width: "100vw", height: "100dvh", overflow: "hidden" }}>
-      <CeremonyCanvasClient initialChapter="proposal" />
+    <main
+      style={{
+        position: "relative",
+        width: "100vw",
+        height: "100dvh",
+        overflow: "hidden",
+      }}
+    >
+      <CeremonyExperience token={token} />
     </main>
   );
 }

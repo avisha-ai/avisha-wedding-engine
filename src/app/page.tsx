@@ -16,7 +16,8 @@
 
 import { useRouter } from "next/navigation";
 
-import { COUPLE_PAIR } from "@/lib/branding";
+import { coupleNames } from "@/lib/branding";
+import { useStoredWedding } from "@/lib/wedding/store";
 import { useCallback, useState, type FormEvent, type JSX } from "react";
 
 /**
@@ -37,6 +38,8 @@ const GOLD = "#C8A24B"; // champagneGold
 export default function Home(): JSX.Element {
   const router = useRouter();
   const [name, setName] = useState("");
+  // The planner's couple when a wedding is saved on this device, else defaults.
+  const couplePair = coupleNames(useStoredWedding()).pair;
 
   const trimmed = name.trim();
   const ready = trimmed.length > 0;
@@ -80,7 +83,7 @@ export default function Home(): JSX.Element {
         >
           Welcome to the Wedding of
           <span className="mt-2 block" style={{ color: GOLD }}>
-            {COUPLE_PAIR}
+            {couplePair}
           </span>
         </h1>
 

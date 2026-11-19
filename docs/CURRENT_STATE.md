@@ -368,5 +368,94 @@ expected, not a miss.
   confirms neither file is swallowed in its new home, which is precisely what a
   `*.html` glob would have broken.
 
+## Phase 1: planner + connection (18 November 2026)
+
+Written by Mrinal's Avi in a sandbox with no `node_modules` and no network:
+**nothing below has been typechecked, linted, built or run yet.**
+
+**What was built**
+- Shared data model `src/lib/wedding/types.ts` (Wedding, WeddingEvent mapped to
+  `CHAPTER_ORDER`, Household, Guest with per-event RSVP, Vendor), demo data
+  `src/lib/wedding/sample.ts` (names from the planner design), and
+  `src/lib/wedding/store.ts`: localStorage under `avisha.wedding.v1`, read via
+  `useSyncExternalStore` (no hydration mismatch), JSON export/import, base64url
+  `?w=` share tokens, and field-by-field validation of everything coming in.
+  Share links carry only couple + events (+ that one guest for invite links):
+  no other guests, no vendors, no money, no event notes.
+- Real `/planner` (`src/app/planner/page.tsx`, `src/components/planner/*`):
+  Overview, Ceremonies, Guests, Vendors tabs; edits save instantly; Preview in
+  3D, Export/Import JSON, Clear, Copy guest link, Open invite. The design
+  mock-up moved to `/planner-design` (`next.config.ts`); `/cinematic` unchanged.
+- `/ceremony` now renders `CeremonyExperience`: reads `?w=` or the stored
+  wedding and shows a card per chapter (title, date, time, venue; "no event
+  planned" when empty), greeting "Welcome, <name>" from the greeting card's
+  sessionStorage. With no wedding it behaves exactly as before.
+- `/invite/[guestId]`: plain page (no 3D), greets the guest, lists only their
+  events, radio RSVPs saved locally and labelled "Demo: not sent anywhere yet",
+  button into the 3D ceremony.
+- `branding.ts` gained `coupleNames(wedding)`; the greeting card, invitation
+  overlay (new optional `couple` prop, passed through `CeremonyCanvas`) use the
+  planner's names, falling back to the defaults. `layout.tsx` metadata keeps
+  the constants (server-side, no wedding there).
+
+**Untested / known gaps**
+- Not built or typechecked. Likely spots for type nits: `useCallback<Update>`
+  in `Planner.tsx`, `Object.fromEntries` typing in `sections.tsx`.
+- Event card position (top-left, 4.5rem down) not checked against
+  `SimulationOverlay` on small screens.
+- RSVPs from guests never reach the couple (no backend; by design for Phase 1).
+- Long weddings make long `?w=` links; no compression.
+
+**How to test**
+1. `npm run dev`, open `/planner`, "Start with the demo wedding".
+2. Edit couple names; check `/` greeting shows them.
+3. Guests tab → Copy guest link for Kavita Mehta → open in a private window:
+   sees only her 4 events; set replies; Save; reload keeps them.
+4. "Enter the 3D ceremony" → step through chapters: event cards match; the
+   Proposal and Legacy chapters say "no event planned".
+5. `/planner-design` still shows the mock-up; `/cinematic`, `/ledger` unchanged.
+6. Clear the planner → `/ceremony` looks exactly as before.
+
 ---
 *Pink Baby: update this file after every completed build step.*
+
+
+## Phase 2: living ceremony (written 18 Nov 2026, UNTESTED, never built)
+
+Approved by Mrinal 18 Nov 2026. Written in a sandbox with no node_modules and no Python.
+
+**Step zero:** from the repo root run `python3 scripts/phase2-apply-canvas-edits.py`
+once. It applies the Phase 2 edits to `CeremonyCanvas.tsx` (environment, cast,
+petals, drift + drag camera, post effects, debug-only SimulationOverlay, phera
+label, couple card), `ceremonyConfig.ts` (eye-height cameras),
+`CeremonyExperience.tsx` (passes `tradition`) and `people/Character.tsx`. It
+asserts on every anchor; a second run fails on purpose. If it fails on the first
+run, apply the same edits by hand (they are readable in the script).
+
+Built:
+- `worldEnvironment.tsx`: per-chapter gradient sky dome (stars at night, glow),
+  90 m ground into fog coloured like the horizon, instanced tree and haveli
+  silhouettes with lit windows, string lights, fireflies (proposal, mehendi),
+  flickering diyas, orbiting sangeet lights, `Petals` (tap = burst; marigold
+  rain at the wedding).
+- `people/rig.ts`: joint hierarchy and 15 code-driven motions.
+- `people/Character.tsx`: lathe/capsule bodies, 8 Indian skin tones, hair,
+  friendly face, attire as geometry (lehenga + dupatta, sherwani + safa + stole,
+  sarees with pallu, kurtas, pandit dhoti + tilak, children), gold with emissive
+  glint, drapes in a vertex-shader breeze.
+- `people/ChapterCast.tsx`: the cast per chapter (all positions in `CASTS`),
+  instanced crowds, 7 pheras clockwise around the agni with groom leading and a
+  gathbandhan cloth, couple tap → name card.
+- `ritualConfig.ts`: all ritual wording per tradition, for Mrinal to review. Jain
+  = "Mangal pheras" with no invented meanings, plus a small gold kalash.
+- Quality: high = Bloom + DOF + Vignette + ACES; medium (phones) no DOF/MSAA,
+  smaller crowds; low (PerformanceMonitor fallback) no post, smallest crowds.
+
+Test: `/ceremony` (all 7 chapters, desktop and 390×844), `/ceremony?debug=1`
+(overlay back), set tradition to Jain in `/planner` and check the wedding label.
+
+Known limits: positions were placed by reading code, not by looking — people may
+clip props (nudge `CASTS`); engagement family may stand in the pool; the mehendi
+swing height is a guess; check `DepthOfField` props (`target`,
+`worldFocusRange`) against postprocessing 6.39; figures are rigid parts, not
+skinned; audio unchanged (opt-in, muted by default).

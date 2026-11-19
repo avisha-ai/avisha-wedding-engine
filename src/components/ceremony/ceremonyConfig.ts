@@ -174,8 +174,8 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
       background: PALETTE.twilightViolet,
     },
     camera: {
-      position: [4.5, 2.6, 8.5],
-      target: [0, 1.4, 0],
+      position: [3.2, 1.6, 6.2], // Phase 2: eye height
+      target: [0, 1.1, 0],
       fov: 44,
     },
     lighting: {
@@ -201,8 +201,8 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
       background: PALETTE.dawnSky,
     },
     camera: {
-      position: [0, 3.6, 11.0],
-      target: [0, 1.5, 0],
+      position: [0, 1.65, 8.6], // Phase 2: eye height
+      target: [0, 1.3, 0],
       fov: 44,
     },
     lighting: {
@@ -228,8 +228,8 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
       background: PALETTE.midnightIndigo,
     },
     camera: {
-      position: [-3.6, 2.2, 7.0],
-      target: [0, 1.8, 0],
+      position: [-2.8, 1.6, 5.6], // Phase 2: eye height
+      target: [0, 1.15, 0],
       fov: 40,
     },
     lighting: {
@@ -257,8 +257,8 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
     camera: {
       // Raised and pulled back, so the shot looks down *into* the bowl rather
       // than across the rim of it.
-      position: [0, 5.6, 11.0],
-      target: [0, 1.0, 0],
+      position: [0, 1.7, 8.8], // Phase 2: eye height
+      target: [0, 1.2, 0],
       fov: 42,
     },
     lighting: {
@@ -284,7 +284,7 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
       background: PALETTE.midnightIndigo,
     },
     camera: {
-      position: [0, 2.4, 6.2],
+      position: [0, 1.65, 6.4], // Phase 2: eye height
       target: [0, 1.0, 0],
       fov: 38,
     },
@@ -311,7 +311,7 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
       background: PALETTE.templeIvory,
     },
     camera: {
-      position: [5.0, 2.8, 9.5],
+      position: [4.2, 1.65, 7.6], // Phase 2: eye height
       target: [0, 1.1, 0],
       fov: 50,
     },
@@ -338,8 +338,8 @@ export const CEREMONY_CHAPTERS: Readonly<Record<ChapterId, ChapterConfig>> = {
       background: PALETTE.midnightIndigo,
     },
     camera: {
-      position: [0, 2.0, 6.0],
-      target: [0, 1.1, 0],
+      position: [0, 1.6, 5.2], // Phase 2: eye height
+      target: [0, 1.1, -0.4],
       fov: 40,
     },
     lighting: {

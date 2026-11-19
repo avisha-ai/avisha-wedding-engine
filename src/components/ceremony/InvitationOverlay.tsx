@@ -42,7 +42,7 @@ import {
 
 import type { ChapterId } from "./ceremonyConfig";
 
-import { COUPLE_MONOGRAM, COUPLE_PAIR_SHORT } from "@/lib/branding";
+import { COUPLE_MONOGRAM, COUPLE_PAIR_SHORT, type CoupleNames } from "@/lib/branding";
 
 // -----------------------------------------------------------------------------
 // Public API
@@ -64,6 +64,8 @@ export interface InvitationOverlayProps {
   readonly anchorChapter?: ChapterId;
   /** Called with the reply on submit. No network request is made without this. */
   readonly onRespond?: (response: InvitationResponse) => void;
+  /** Couple names from the planner's wedding. Defaults to `branding.ts`. */
+  readonly couple?: CoupleNames;
 }
 
 const ATTENDANCE_OPTIONS: readonly { value: Attendance; label: string }[] = [
@@ -99,7 +101,10 @@ export default function InvitationOverlay({
   chapterId,
   anchorChapter = "engagement",
   onRespond,
+  couple,
 }: InvitationOverlayProps): JSX.Element | null {
+  const coupleShort = couple?.short ?? COUPLE_PAIR_SHORT;
+  const coupleMonogram = couple?.monogram ?? COUPLE_MONOGRAM;
   const fieldId = useId();
   const [opened, setOpened] = useState(false);
   const [cracking, setCracking] = useState(false);
@@ -203,13 +208,13 @@ export default function InvitationOverlay({
             Together with their families
           </div>
           <div style={{ fontSize: "1.35rem", fontWeight: 600, marginTop: "0.35rem" }}>
-            {COUPLE_PAIR_SHORT}
+            {coupleShort}
           </div>
         </header>
 
         {!opened ? (
           <div style={{ display: "grid", placeItems: "center", padding: "0.6rem 0 0.9rem" }}>
-            <WaxSeal cracking={cracking} onBreak={breakSeal} />
+            <WaxSeal cracking={cracking} onBreak={breakSeal} monogram={coupleMonogram} />
             <p
               aria-live="polite"
               style={{
@@ -303,9 +308,11 @@ export default function InvitationOverlay({
 function WaxSeal({
   cracking,
   onBreak,
+  monogram,
 }: {
   readonly cracking: boolean;
   readonly onBreak: () => void;
+  readonly monogram: string;
 }): JSX.Element {
   return (
     <button
@@ -391,7 +398,7 @@ function WaxSeal({
             fontWeight="700"
             fill="rgba(86,56,12,0.72)"
           >
-            {COUPLE_MONOGRAM}
+            {monogram}
           </text>
         </svg>
       ))}

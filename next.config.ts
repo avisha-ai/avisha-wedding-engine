@@ -16,8 +16,11 @@ import type { NextConfig } from "next";
  * bundled docs (`05-config/01-next-config-js/rewrites.md`), an array is
  * "applied after checking the filesystem (pages and `/public` files)", and
  * "the first rewrite that resolves to a static file, page, or dynamic route is
- * served". A real page at `/planner` would therefore still win; nothing
- * currently claims either path.
+ * served". A real page at `/planner` would therefore still win.
+ *
+ * Phase 1 (18 November 2026): `/planner` is now a real page
+ * (`src/app/planner/page.tsx`), so the planner mock-up moved to
+ * `/planner-design`. `/cinematic` is unchanged.
  *
  * These live here rather than in `vercel.json` for one reason: `next.config.ts`
  * rewrites apply under `next dev` / `next start`, so they can be verified with
@@ -36,7 +39,7 @@ const nextConfig: NextConfig = {
 
   async rewrites() {
     return [
-      { source: "/planner", destination: PLANNER_DOC },
+      { source: "/planner-design", destination: PLANNER_DOC },
       { source: "/cinematic", destination: CINEMATIC_DOC },
 
       // The cinematic document links to the planner by its original root-relative

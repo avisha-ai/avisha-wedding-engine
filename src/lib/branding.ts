@@ -37,3 +37,31 @@ export const COUPLE_PAIR_SHORT = `${COUPLE.bride} & ${COUPLE.groom}`;
  * Two glyphs; the seal's type size is set for two.
  */
 export const COUPLE_MONOGRAM = `${COUPLE.bride[0]}${COUPLE.groom[0]}`;
+
+export interface CoupleNames {
+  /** "A and B" */
+  readonly pair: string;
+  /** "A & B" */
+  readonly short: string;
+  /** "AB" */
+  readonly monogram: string;
+}
+
+/**
+ * Names from the planner's wedding when one exists, else the defaults above.
+ *
+ * Pure on purpose: `layout.tsx` metadata is rendered on the server, where no
+ * wedding exists, and keeps the constants. Client components pass in the
+ * wedding they read from `useStoredWedding()` or a share link.
+ */
+export function coupleNames(
+  wedding?: { readonly couple: { readonly partnerA: string; readonly partnerB: string } } | null,
+): CoupleNames {
+  const a = wedding?.couple.partnerA.trim() || COUPLE.bride;
+  const b = wedding?.couple.partnerB.trim() || COUPLE.groom;
+  return {
+    pair: `${a} and ${b}`,
+    short: `${a} & ${b}`,
+    monogram: `${a[0] ?? ""}${b[0] ?? ""}`.toUpperCase(),
+  };
+}

@@ -1,5 +1,10 @@
 "use client";
 
+// R3F pattern: scratch objects and drag state are mutated inside useFrame and pointer handlers.
+// React Compiler lint cannot see that this is imperative per-frame Three.js
+// work, not render-time state.
+/* eslint-disable react-hooks/immutability */
+
 /**
  * CeremonyCanvas.tsx
  * -----------------------------------------------------------------------------
@@ -19,7 +24,14 @@
 
 import { PerformanceMonitor } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Bloom, EffectComposer } from "@react-three/postprocessing";
+import {
+  Bloom,
+  DepthOfField,
+  EffectComposer,
+  ToneMapping,
+  Vignette,
+} from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
 import {
   useCallback,
   useEffect,
@@ -43,6 +55,11 @@ import { ChapterParticles } from "./ceremonyParticles";
 import { CeremonySoundscape } from "./ceremonyAudio";
 import SimulationOverlay from "./SimulationOverlay";
 import InvitationOverlay from "./InvitationOverlay";
+import type { CoupleNames } from "@/lib/branding";
+import type { Tradition } from "@/lib/wedding/types";
+import { ChapterCast, type QualityTier } from "./people/ChapterCast";
+import { ENV, Petals, WorldEnvironment, type PetalHandle } from "./worldEnvironment";
+import { PHERA_TIMING, RITUALS, pheraRound } from "./ritualConfig";
 
 // -----------------------------------------------------------------------------
 // Public props
@@ -62,6 +79,10 @@ export interface CeremonyCanvasProps {
   readonly intro?: boolean;
   /** Extra classes for the wrapping element. */
   readonly className?: string;
+  /** Couple names for the invitation card. Defaults to `branding.ts`. */
+  readonly couple?: CoupleNames;
+  /** Wedding tradition from the planner; picks the ritual labels. */
+  readonly tradition?: Tradition;
 }
 
 /** Minimal structural shape of a mutable numeric ref we tween with GSAP. */
@@ -160,9 +181,15 @@ function isHandheld(): boolean {
 function FadeWorld({
   chapter,
   fadeRef,
+  tier,
+  kalash,
+  onCoupleTap,
 }: {
   readonly chapter: ChapterConfig;
   readonly fadeRef: NumberRef;
+  readonly tier: QualityTier;
+  readonly kalash: boolean;
+  readonly onCoupleTap: () => void;
 }): JSX.Element {
   const groupRef = useRef<THREE.Group>(null);
   useFrame(() => {
@@ -171,6 +198,44 @@ function FadeWorld({
   return (
     <group ref={groupRef}>
       <ChapterWorld chapter={chapter} />
+      <WorldEnvironment chapter={chapter.id} tier={tier} />
+      <ChapterCast chapter={chapter.id} tier={tier} onCoupleTap={onCoupleTap} />
+      {kalash && chapter.id === "wedding" && <Kalash />}
+    </group>
+  );
+}
+
+/**
+ * A small gold kalash with mango leaves and a coconut, shown by the mandap when
+ * the tradition config asks for it (Jain: one of the ashtamangala). Please
+ * review with family; see ritualConfig.ts.
+ */
+function Kalash(): JSX.Element {
+  const body = useMemo(
+    () =>
+      new THREE.LatheGeometry(
+        [[0.001, 0], [0.09, 0.01], [0.16, 0.12], [0.15, 0.22], [0.07, 0.3], [0.09, 0.34], [0.001, 0.34]].map(
+          ([r, y]) => new THREE.Vector2(r, y),
+        ),
+        24,
+      ),
+    [],
+  );
+  return (
+    <group position={[2.3, 0, 1.4]}>
+      <mesh geometry={body}>
+        <meshStandardMaterial color="#D9A93C" metalness={0.85} roughness={0.3} emissive="#8A5A10" emissiveIntensity={0.6} />
+      </mesh>
+      {[0, 1, 2, 3, 4].map((i) => (
+        <mesh key={i} position={[Math.cos(i * 1.26) * 0.08, 0.38, Math.sin(i * 1.26) * 0.08]} rotation={[Math.sin(i * 1.26) * 0.9, 0, -Math.cos(i * 1.26) * 0.9]}>
+          <coneGeometry args={[0.03, 0.16, 6]} />
+          <meshStandardMaterial color="#2E7D32" roughness={0.8} />
+        </mesh>
+      ))}
+      <mesh position={[0, 0.42, 0]}>
+        <sphereGeometry args={[0.07, 14, 10]} />
+        <meshStandardMaterial color="#7A4A23" roughness={0.9} />
+      </mesh>
     </group>
   );
 }
@@ -183,10 +248,20 @@ interface CeremonyRigProps {
   readonly chapter: ChapterConfig;
   readonly onSettled: (id: ChapterId) => void;
   readonly intro: boolean;
+  readonly tier: QualityTier;
+  readonly kalash: boolean;
+  readonly onCoupleTap: () => void;
 }
 
-function CeremonyRig({ chapter, onSettled, intro }: CeremonyRigProps): JSX.Element {
-  const { camera } = useThree();
+function CeremonyRig({ chapter, onSettled, intro, tier, kalash, onCoupleTap }: CeremonyRigProps): JSX.Element {
+  const { camera, gl } = useThree();
+
+  // Phase 2: GSAP tweens this base position; each frame the camera sits at
+  // base + a slow cinematic drift, orbited a little by the viewer's drag.
+  const basePos = useRef(new THREE.Vector3(...chapter.camera.position));
+  const drag = useRef({ yaw: 0, pitch: 0, toYaw: 0, toPitch: 0, down: false, x: 0, y: 0, t: 0, moved: 0, sx: 0, sy: 0 });
+  const petals = useRef<PetalHandle>(null);
+  const reduced = useMemo(() => prefersReducedMotion(), []);
 
   const keyLightRef = useRef<THREE.DirectionalLight>(null);
   const ambientRef = useRef<THREE.AmbientLight>(null);
@@ -245,7 +320,7 @@ function CeremonyRig({ chapter, onSettled, intro }: CeremonyRigProps): JSX.Eleme
     // the React compiler (rightly) rejects.
     if (playIntro) {
       tl.from(
-        cam.position,
+        basePos.current,
         { x: INTRO.position[0], y: INTRO.position[1], z: INTRO.position[2] },
         0,
       );
@@ -261,7 +336,7 @@ function CeremonyRig({ chapter, onSettled, intro }: CeremonyRigProps): JSX.Eleme
       );
     } else {
       tl.to(
-        cam.position,
+        basePos.current,
         {
           x: chapter.camera.position[0],
           y: chapter.camera.position[1],
@@ -327,14 +402,70 @@ function CeremonyRig({ chapter, onSettled, intro }: CeremonyRigProps): JSX.Eleme
     };
   }, [chapter, camera, onSettled, intro]);
 
-  // Per-frame: keep the camera aimed at the (tweened) look target.
-  useFrame(() => {
+  // Drag to look around a little; a quick tap showers petals from the cursor.
+  useEffect(() => {
+    const el = gl.domElement;
+    const d = drag.current;
+    const ray = new THREE.Raycaster();
+    const down = (e: PointerEvent): void => {
+      d.down = true;
+      d.x = d.sx = e.clientX;
+      d.y = d.sy = e.clientY;
+      d.t = performance.now();
+      d.moved = 0;
+    };
+    const move = (e: PointerEvent): void => {
+      if (!d.down) return;
+      d.moved = Math.max(d.moved, Math.hypot(e.clientX - d.sx, e.clientY - d.sy));
+      d.toYaw = THREE.MathUtils.clamp(d.toYaw - (e.clientX - d.x) * 0.004, -0.45, 0.45);
+      d.toPitch = THREE.MathUtils.clamp(d.toPitch + (e.clientY - d.y) * 0.002, -0.1, 0.12);
+      d.x = e.clientX;
+      d.y = e.clientY;
+    };
+    const up = (e: PointerEvent): void => {
+      if (!d.down) return;
+      d.down = false;
+      d.toYaw = 0;
+      d.toPitch = 0;
+      if (d.moved < 8 && performance.now() - d.t < 450) {
+        const r = el.getBoundingClientRect();
+        const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+        ray.setFromCamera(ndc, camera);
+        petals.current?.burst(ray.ray.at(3.2, new THREE.Vector3()));
+      }
+    };
+    el.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return () => {
+      el.removeEventListener("pointerdown", down);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+  }, [gl, camera]);
+
+  // Per-frame: base + drift, orbit by the drag, aim at the (tweened) target.
+  const offset = useMemo(() => new THREE.Vector3(), []);
+  useFrame((state, dt) => {
+    const d = drag.current;
+    const k = 1 - Math.exp(-dt * (d.down ? 8 : 1.6));
+    d.yaw += (d.toYaw - d.yaw) * k;
+    d.pitch += (d.toPitch - d.pitch) * k;
+    const t = state.clock.elapsedTime;
+    const amp = reduced ? 0 : ENV[chapter.id].drift;
+    offset.copy(basePos.current).sub(lookTarget.current);
+    offset.x += Math.sin(t * 0.07) * amp;
+    offset.y += Math.sin(t * 0.13) * amp * 0.12;
+    offset.z += Math.sin(t * 0.05 + 1.3) * amp;
+    offset.applyAxisAngle(THREE.Object3D.DEFAULT_UP, d.yaw);
+    offset.y += d.pitch * offset.length();
+    camera.position.copy(lookTarget.current).add(offset);
     camera.lookAt(lookTarget.current);
   });
 
   const fogColor = useMemo(
-    () => new THREE.Color(chapter.palette.background),
-    [chapter.palette.background],
+    () => new THREE.Color(ENV[chapter.id].horizon),
+    [chapter.id],
   );
 
   return (
@@ -342,7 +473,7 @@ function CeremonyRig({ chapter, onSettled, intro }: CeremonyRigProps): JSX.Eleme
       <color attach="background" args={[fogColor]} />
       <fogExp2
         attach="fog"
-        args={[fogColor.getHex(), chapter.lighting.fogDensity]}
+        args={[fogColor.getHex(), Math.max(chapter.lighting.fogDensity, 0.035)]}
       />
 
       <ambientLight
@@ -383,10 +514,11 @@ function CeremonyRig({ chapter, onSettled, intro }: CeremonyRigProps): JSX.Eleme
         shadow-normalBias={0.02}
       />
 
-      <FadeWorld key={chapter.id} chapter={chapter} fadeRef={curFade} />
+      <FadeWorld key={chapter.id} chapter={chapter} fadeRef={curFade} tier={tier} kalash={kalash} onCoupleTap={onCoupleTap} />
       {prev && (
-        <FadeWorld key={prev.id} chapter={prev} fadeRef={prevFade} />
+        <FadeWorld key={prev.id} chapter={prev} fadeRef={prevFade} tier={tier} kalash={kalash} onCoupleTap={onCoupleTap} />
       )}
+      <Petals ref={petals} max={tier === "low" ? 90 : tier === "medium" ? 160 : 260} rain={chapter.id === "wedding"} />
 
       {/* Atmospheric VFX — fade with their chapter via the shared fade refs. */}
       <ChapterParticles key={`fx-${chapter.id}`} chapter={chapter} fadeRef={curFade} />
@@ -407,7 +539,22 @@ export default function CeremonyCanvas({
   showControls = true,
   intro = true,
   className,
+  couple,
+  tradition = "hindu",
 }: CeremonyCanvasProps): JSX.Element {
+  // The engineering overlay is for us, not guests: only with ?debug=1.
+  const [debug] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "1",
+  );
+  const [coupleCard, setCoupleCard] = useState(false);
+  const showCoupleCard = useCallback(() => setCoupleCard(true), []);
+  useEffect(() => {
+    if (!coupleCard) return;
+    const id = window.setTimeout(() => setCoupleCard(false), 6000);
+    return () => window.clearTimeout(id);
+  }, [coupleCard]);
+  const rituals = RITUALS[tradition];
+  const [round, setRound] = useState(0);
   const [chapterId, setChapterId] = useState<ChapterId>(initialChapter);
   const [audioOn, setAudioOn] = useState(false);
 
@@ -440,6 +587,14 @@ export default function CeremonyCanvas({
   const soundscapeRef = useRef<CeremonySoundscape | null>(null);
 
   const chapter = CEREMONY_CHAPTERS[chapterId];
+  const tier: QualityTier = !bloomOn ? "low" : handheld ? "medium" : "high";
+
+  // Phera label (DOM) follows the same clock as the 3D pheras.
+  useEffect(() => {
+    if (chapterId !== "wedding") return;
+    const id = window.setInterval(() => setRound(pheraRound(performance.now() / 1000)), 500);
+    return () => window.clearInterval(id);
+  }, [chapterId]);
 
   const handleSettled = useCallback(
     (id: ChapterId) => {
@@ -528,6 +683,8 @@ export default function CeremonyCanvas({
         camera={{
           position: [...chapter.camera.position],
           fov: chapter.camera.fov,
+          near: 0.1,
+          far: 220,
         }}
         dpr={dpr}
       >
@@ -538,27 +695,60 @@ export default function CeremonyCanvas({
           onFallback={() => setBloomOn(false)}
         />
 
-        <CeremonyRig chapter={chapter} onSettled={handleSettled} intro={intro} />
+        <CeremonyRig
+          chapter={chapter}
+          onSettled={handleSettled}
+          intro={intro}
+          tier={tier}
+          kalash={rituals.kalash}
+          onCoupleTap={showCoupleCard}
+        />
 
         {/* Bloom — only bright specular glints, emissive lanterns, and fire
             cross the luminance threshold, so the gold and flames actually glow. */}
-        {bloomOn && (
+        {/* Cinematic finish. The composer renders to targets, so tone mapping
+            is applied here (ACES) rather than by the renderer. Depth of field
+            only on the high tier; nothing extra on the low tier. */}
+        {tier === "high" && (
           <EffectComposer>
-            <Bloom
-              mipmapBlur
-              intensity={0.9}
-              luminanceThreshold={0.55}
-              luminanceSmoothing={0.25}
-            />
+            <Bloom mipmapBlur intensity={0.85} luminanceThreshold={0.62} luminanceSmoothing={0.25} />
+            <DepthOfField target={[...chapter.camera.target]} worldFocusRange={6} bokehScale={1.6} />
+            <Vignette offset={0.3} darkness={0.6} />
+            <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+          </EffectComposer>
+        )}
+        {tier === "medium" && (
+          <EffectComposer multisampling={0}>
+            <Bloom mipmapBlur intensity={0.75} luminanceThreshold={0.65} luminanceSmoothing={0.25} />
+            <Vignette offset={0.3} darkness={0.55} />
+            <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
           </EffectComposer>
         )}
       </Canvas>
 
       {/* Interactive Simulation Overlay — drives the Agent Mesh live. */}
-      <SimulationOverlay chapterId={chapterId} />
+      {debug && <SimulationOverlay chapterId={chapterId} />}
+
+      {/* Pheras label, wedding chapter only. Wording lives in ritualConfig.ts. */}
+      {chapterId === "wedding" && (
+        <div style={{ position: "absolute", left: "50%", bottom: "5.5rem", transform: "translateX(-50%)", textAlign: "center", color: "#FDFBF7", textShadow: "0 2px 10px #000", pointerEvents: "none", fontFamily: "var(--font-marcellus), Georgia, serif", maxWidth: "90vw" }}>
+          <div style={{ fontSize: "0.75rem", letterSpacing: "0.16em", textTransform: "uppercase", color: "#E8C97A" }}>{rituals.roundsTitle}</div>
+          <div style={{ fontSize: "1.05rem", marginTop: "0.2rem" }}>
+            {round === 0 ? rituals.complete : `${round} of ${PHERA_TIMING.rounds}${rituals.rounds[round - 1] ? ` · ${rituals.rounds[round - 1]}` : ""}`}
+          </div>
+        </div>
+      )}
+
+      {/* Tapping the couple shows who they are. */}
+      {coupleCard && (
+        <button type="button" onClick={() => setCoupleCard(false)} style={{ position: "absolute", left: "50%", top: "38%", transform: "translate(-50%, -50%)", padding: "1rem 1.6rem", borderRadius: "16px", background: "rgba(26,27,75,0.72)", border: "1px solid #C8A24B88", color: "#FDFBF7", backdropFilter: "blur(10px)", fontFamily: "var(--font-marcellus), Georgia, serif", fontSize: "1.5rem", cursor: "pointer" }}>
+          {couple?.pair ?? "The couple"}
+          <div style={{ fontSize: "0.8rem", opacity: 0.75, marginTop: "0.3rem", fontFamily: "system-ui, sans-serif" }}>{chapter.title}</div>
+        </button>
+      )}
 
       {/* The invitation. Renders only on its own chapter. */}
-      <InvitationOverlay chapterId={chapterId} />
+      <InvitationOverlay chapterId={chapterId} couple={couple} />
 
       {/* Ambient soundscape toggle (opt-in; also unlocks browser audio). */}
       <button

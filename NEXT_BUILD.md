@@ -1,15 +1,19 @@
 # NEXT_BUILD — The Atelier — Wedding Engine
 ## The ONE thing approved to build in this repo right now.
 
-**Approved objective:** Continue in the wedding-engine session.
+**Approved objective:** Phase 1 + 2: build and test on Mrinal's Mac
 
-### Why this
-One active writer at a time. This passport was added without touching that session's uncommitted work.
+Mrinal approved Phase 1 (planner + shared wedding model + /invite) and Phase 2
+(living ceremony: sky/horizon worlds, wedding cast, cinematic post) on
+18 November 2026. Neither has ever been built.
 
-### Next action on the passport
-Continue the build in its own session — this repo has an active writer.
+### Next action
+Follow the handoff (summarised in `docs/CURRENT_STATE.md`, "Phase 2"): branch
+`planner-phase1`, run `python3 scripts/phase2-apply-canvas-edits.py` once,
+`npm install`, build, lint, fix type errors without changing behaviour, check
+every route and all 7 chapters (desktop + phone viewport), screenshot, push.
+Do not merge or deploy.
 
 ---
 
-Nothing else is approved in this repo. If a session believes something else
-is more important, it stops and says so — it does not start.
+Nothing else is approved in this repo.
