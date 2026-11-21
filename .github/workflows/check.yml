@@ -1,0 +1,52 @@
+name: Check
+# Check robot: only checks and reports. Never deploys, never changes the site.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NEXT_TELEMETRY_DISABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Secret scan
+        shell: bash
+        run: |
+          set +e
+          hits=$(grep -rIEno \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.next \
+            --exclude='*.lock' --exclude=package-lock.json --exclude=check.yml \
+            -e '\bgsk_[A-Za-z0-9]{20,}' \
+            -e '\bsk-[A-Za-z0-9_-]{20,}' \
+            -e '\bsk-ant-[A-Za-z0-9_-]{20,}' \
+            -e 'AIza[0-9A-Za-z_-]{30,}' \
+            -e '\bghp_[A-Za-z0-9]{30,}' \
+            -e '\bgithub_pat_[A-Za-z0-9_]{30,}' \
+            -e '\bxox[baprs]-[A-Za-z0-9-]{10,}' \
+            -e '-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+            .)
+          if [ -n "$hits" ]; then
+            echo "$hits" | sed -E 's/^([^:]+:[0-9]+:)(.{6}).*/\1\2...(masked)/'
+            echo "::error::Possible secret committed"
+            exit 1
+          fi
+          echo "No secrets found."
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
